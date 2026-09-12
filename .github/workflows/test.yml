@@ -8,4 +8,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm test
+      - name: node suites
+        run: node --test tests/*.test.mjs
+      - name: shell suite (needs kitty remote control; skipped without it)
+        run: bash tests/kitty-send.test.sh || [ $? -eq 2 ]
