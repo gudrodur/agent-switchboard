@@ -1,5 +1,5 @@
-// Tests for omp-tab-state.sh: proof by STATE for a delegated omp tab
-//. Fixtures copy the real session file's row shapes
+// Tests for omp-tab-state.sh: proof by STATE for a delegated omp tab.
+// Fixtures copy the real session file's row shapes
 // (2026-09-10 tab, session.../2026-09-10T09-13-32-324Z_01a08a97.jsonl):
 // one JSON object per line, row 1 type:title, row 2 type:session with cwd
 // and timestamp, then type:message rows (role user/assistant/toolResult,
@@ -423,4 +423,23 @@ test('exited with one job alive prints jobs=1', async () => {
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.out, /state=exited/);
   assert.match(r.out, /jobs=1/);
+});
+
+test('with no seams set, the link files are read from omp\'s own directory under $HOME', async () => {
+  // terminal-sessions/ and sessions/ are written by omp itself, so the default
+  // must be where omp writes them, whatever AGENT_SWITCHBOARD_DIR says.
+  await clearLinks();
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'example-tab-state-home-'));
+  const linkDir = path.join(home, '.omp', 'agent', 'terminal-sessions');
+  await fs.mkdir(linkDir, { recursive: true });
+  const t = nowMs();
+  await writeSession('home-default.jsonl', [titleRow(), sessionRow(WCWD, nowIso()), userRow('do it', t - 9000), assistantRow('stop', t - 1000)]);
+  await fs.writeFile(path.join(linkDir, `kitty-${WID}`), `${WCWD}\n${path.join(sessDir, 'home-default.jsonl')}\n`);
+  const r = await runScript([WID], {
+    HOME: home, OMP_TAB_STATE_DIR: '', OMP_TAB_STATE_SESSIONS_DIR: '',
+    AGENT_SWITCHBOARD_DIR: path.join(home, 'switchboard'), XDG_STATE_HOME: '',
+  });
+  await fs.rm(home, { recursive: true, force: true });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.out, /state=idle/);
 });

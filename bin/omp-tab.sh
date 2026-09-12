@@ -57,13 +57,13 @@ STATE="${XDG_RUNTIME_DIR:-/tmp}/omp-tab-launched.$(id -u)"
 SEND="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kitty-send.sh"
 [ -x "$SEND" ] || { printf '%s\n' "omp-tab: missing or non-executable $SEND — this script does not send on its own" >&2; exit 1; }
 STATE_TAB="$(dirname "$SEND")/omp-tab-state.sh"
-# Optional key step: a command whose stdout is `export...` lines, evaluated
-# before the probe and inside the tab (default `agent-switchboard-key` on PATH
-# is NOT run automatically — unset means no key step at all).
+# Optional key step: a command whose stdout is `export ...` lines, evaluated
+# before the probe and inside the tab. Unset (the default) means no key step.
+# OMP_TAB_KEY_COMMAND wins over KEY_COMMAND when both are set.
 KEY_COMMAND="${OMP_TAB_KEY_COMMAND:-${KEY_COMMAND:-}}"
 
 # $1 is the message, $2 the exit code. "$*" would print the code as part of the
-# message ("... 3"), which it did until.
+# message ("... 3"), which it once did.
 die()  { printf '%s\n' "omp-tab: $1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "omp-tab: $*" >&2; }
 
@@ -101,8 +101,8 @@ if [ "${1:-}" = "--list" ]; then
   live_ids=$(kitty @ ls 2>/dev/null | jq -r '.[].tabs[].windows[].id' 2>/dev/null | tr '\n' ' ')
   # Gone rows are pruned on every list, not kept: a gone id can never be acted
   # on again (--close on one just deletes the row and says "already gone"), and
-  # without pruning the append-only file grows forever — the 8 dead rows in the
-  #  report. Only ids ABSENT from kitty are pruned; REUSED ids stay, since a
+  # without pruning the append-only file grows forever — one audit found 8 dead
+  # rows in it. Only ids ABSENT from kitty are pruned; REUSED ids stay, since a
   # stranger may own that id now and the row is the evidence. Deletion uses the
   # same sed idiom as --close below. (The loop holds the pre-prune fd, so
   # deleting mid-loop is safe; a concurrent launch appends new lines, which the
@@ -253,14 +253,14 @@ PROFILE=""
 #   1. An unpinned launch follows a value a human edits. On 2026-09-07 alone
 #      `modelRoles.default` read opencode-go/glm-5.3-flash, then
 #      opencode-go/muse-spark-1.3-contributor, then opencode-go/deepseek-v4-flash
-#. A delegated run's model is therefore whatever was last typed.
+#      A delegated run's model is therefore whatever was last typed.
 #   2. The status-bar check below compares model NAMES, so it cannot tell
 #      opencode-go/deepseek-v4-flash from deepseek/deepseek-v4-flash. It verifies
 #      the model, never the provider. The `model:` line it prints is advisory.
 #   3. But pinning a provider means pinning one that can run out, and on
 #      2026-09-08 it did: DeepSeek at -$0.03, every delegated tab 402 on every
 #      request, rescued only by a human noticing and typing /model
-#. A pin cannot notice that; a default that follows the
+#      A pin cannot notice that; a default that follows the
 #      account can at least be pointed somewhere solvent in one place.
 #
 # So: inherit, and make the failure loud instead. The preflight below proves the
@@ -450,7 +450,7 @@ except Exception:
       # `--tools read` because --tools is an allowlist defaulting to ALL; the
       # probe must not be able to write. cwd is $CWD so the MCP config the tab
       # will see is what gets exercised (measured 2026-09-09: 5.4 s inside a
-      # project with a.mcp.json, 4.4 s outside one).
+      # project with a .mcp.json, 4.4 s outside one).
       if [ -n "$m" ]; then
         out="$(cd "$CWD" && timeout "$PROBE_TIMEOUT" omp -p --no-session --model "$m" --tools read \
                <<< "Reply with exactly the word OK and nothing else." 2>&1)"; rc=$?
@@ -655,7 +655,7 @@ done
 # selects a different (and pricier) one than a bare launch. The second
 # alternative covers Go-backed models (Muse Spark renders as
 # `Muse Spark 1.3 Contributor`); without it a working default launch prints
-# no `model:` line at all (measured 2026-09-08, ).
+# no `model:` line at all (measured 2026-09-08).
 mdl=$(kitty @ get-text --match "id:$WID" 2>/dev/null | grep -oiE 'DeepSeek V4 [A-Za-z-]+( Vision[A-Za-z-]*)?|Muse Spark [A-Za-z0-9. -]*' | tail -1)
 mdl="${mdl% }"   # the bar pads the name; a trailing space made "Contributor  —"
 # provider/model, not the pretty name alone: the bar cannot tell
@@ -694,7 +694,7 @@ MSG="$MSG Use absolute paths and 'git -C <dir> ...'; do NOT rely on 'cd' — on 
 # The send itself lives in kitty-send.sh, which owns the \r rule (text and the
 # carriage return in ONE call) and the arrival check. Keeping a second copy here
 # is how the two drift, and the rule's whole value is that it is followed
-# exactly —.
+# exactly.
 #
 # Its exit 3 means "sent, but not observed on screen", which is NOT a reason to
 # resend: a second send against an agent TUI enqueues an empty steering message

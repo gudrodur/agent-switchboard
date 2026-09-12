@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Send a message to another agent through its mailbox and prove delivery by
-// the consumer's own ack row, not by reading a screen (
-// step 2). Same flag vocabulary as kitty-send.sh, so callers change one
+// the consumer's own ack row, not by reading a screen. Same flag vocabulary as kitty-send.sh, so callers change one
 // command name: --to, --text, --file, --now, --stop, --idle-when, --queue,
 // --deadline. Priority mapping: --now (and a bare --text) is `now`,
 // --stop is `stop`, --idle-when is `idle`, --queue is `queue`. A window id
@@ -12,8 +11,8 @@
 // rows ack 20 s to 3 min later), withdraws the mailbox row, and falls through
 // to kitty-send.sh, saying "queued, recipient busy/parked" with the next step
 // instead of phrasing the wait limit as a failure; the row id and the mailbox
-// path print on stderr either way. The message is never dropped on that path
-//: with no kitty window to fall back to, the row is left queued, and
+// path print on stderr either way. The message is never dropped on that path:
+// with no kitty window to fall back to, the row is left queued, and
 // when kitty-send sends nothing the message goes back in the mailbox; both
 // exit 3. A recipient with no registered consumer
 // (beacon mailbox flag, set by the consumer hook each turn) falls through to

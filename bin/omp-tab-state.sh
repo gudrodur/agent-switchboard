@@ -2,12 +2,12 @@
 # Proof by STATE for a delegated omp tab.
 #
 # An omp tab writes its state to disk as it works: one JSON object per line in
-# a session jsonl file under the sessions dir (OMP_TAB_STATE_SESSIONS_DIR). This script links a kitty
+# a session jsonl file under omp's sessions dir (~/.omp/agent/sessions/). This script links a kitty
 # window to that file and reports the tab's state from the tail of the file,
 # last row wins. Nothing on the screen is read and nothing is sent.
 #
 # The link from window to file: bin/omp-tab.sh launches
-# `bash -lc "eval... && exec omp..."` so the window pid IS the omp pid after
+# `bash -lc "eval ... && exec omp ..."` so the window pid IS the omp pid after
 # exec. /proc/<pid>/fd/0 resolves to /dev/pts/N and
 # terminal-sessions/pts-N line 2 holds the session jsonl path.
 # Older runs wrote terminal-sessions/kitty-<window id> instead, which wins
@@ -52,11 +52,10 @@
 #   1  usage error, or no such window (the window is gone; nothing to link)
 #   2  the session file is unreadable (present but cannot be read or parsed)
 #
-# Store root: AGENT_SWITCHBOARD_DIR (default
-# `${XDG_STATE_HOME:-$HOME/.local/state}/agent-switchboard`).
 # Env seams: OMP_TAB_STATE_DIR overrides the terminal-sessions
 # directory; OMP_TAB_STATE_SESSIONS_DIR overrides the canonical sessions dir
-# the link arbitration prefers (both default under AGENT_SWITCHBOARD_DIR);
+# the link arbitration prefers (both default to omp's own directories
+# under $HOME/.omp/agent, because omp writes them, not this repo);
 # kitty is resolved from PATH so a stub can serve canned `ls`.
 # OMP_TAB_STATE_PTS_N overrides the /proc readlink (the test's own fd 0 is
 # not a pty it controls).
@@ -64,8 +63,7 @@
 die()  { printf '%s\n' "omp-tab-state: $1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "omp-tab-state: $*" >&2; }
 
-_SWITCHBOARD="${AGENT_SWITCHBOARD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-switchboard}"
-SESSDIR="${OMP_TAB_STATE_DIR:-$_SWITCHBOARD/terminal-sessions}"
+SESSDIR="${OMP_TAB_STATE_DIR:-$HOME/.omp/agent/terminal-sessions}"
 # The sibling that owns the alive-jobs walk. Resolved from this file rather
 # than $PATH so a copy of the pair in another directory keeps working, the
 # same way kitty-send.sh resolves this script.
@@ -114,7 +112,7 @@ esac
 # candidates and arbitrate: prefer the one whose session has NOT ended, else
 # the one under the canonical sessions dir; the choice says
 # reason=link-disagreement. Either file alone still resolves as before.
-SESSIONS_DIR="${OMP_TAB_STATE_SESSIONS_DIR:-$_SWITCHBOARD/sessions}"
+SESSIONS_DIR="${OMP_TAB_STATE_SESSIONS_DIR:-$HOME/.omp/agent/sessions}"
 SOURCE=""; SESSION=""; LINK_REASON=""
 link_target() { # $1 = link file; prints its line 2, or nothing
   [ -f "$1" ] || return 0

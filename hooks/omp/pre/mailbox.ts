@@ -31,8 +31,8 @@
 // the next turn — which never comes while parked). Suffix match, not one
 // captured key: after `/move` the ExtensionRunner's live `cwd` getter
 // moves the beacon and new sends to the NEW key, while rows
-// already queued under the pre-move key stay in the old file
-//  — watching one captured key would miss them.
+// already queued under the pre-move key stay in the old file,
+// so watching one captured key would miss them.
 // A non-idle change is ignored: the in-turn drains deliver it. An empty drain
 // sends nothing and triggers no turn, so our own ack appends (which also
 // touch the watched files) cannot wake the agent in a loop. A slow poll backs
@@ -59,6 +59,7 @@ import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  PRESENCE_FILE,
   recordPresence,
   releasePresence,
 } from "../../../lib/presence.mjs";
@@ -81,11 +82,6 @@ import {
 // (one small-file read per tick) to be cheap on every parked tab.
 export const IDLE_POLL_MS = 5000;
 
-const switchboardDir = () =>
-  process.env.AGENT_SWITCHBOARD_DIR ??
-  `${process.env.XDG_STATE_HOME ?? `${process.env.HOME ?? ''}/.local/state`}/agent-switchboard`;
-const PRESENCE_FILE =
-  process.env.AGENT_SWITCHBOARD_PRESENCE_FILE ?? `${switchboardDir()}/presence.json`;
 const MESSAGE_TYPE = "mailbox";
 
 export const DELIVERY_FOR_PRIORITY = {

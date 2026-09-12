@@ -81,7 +81,7 @@
 # when the caller wants a cap. A busy target with NEITHER a bound nor --queue
 # is refused, exit 7, nothing sent: until 2026-09-05 it was sent to anyway
 # with a note on stderr naming the cost, and the note was read after the
-# result was already gone ( — the senders never passed --wait-idle,
+# result was already gone (the senders never passed --wait-idle,
 # because nothing made them). The one send that should land mid-turn —
 # "stop", or a notice about something that is about to disappear — says so
 # with `--now`, which accepts the discard in the command line where the next
@@ -89,7 +89,7 @@
 #
 # Title convention this relies on, measured on omp 2026-09-03: the window title
 # starts "π ⠹ …" while a turn is running (a braille spinner, U+2800–U+28FF),
-# "π > …" at an idle prompt, and "π! …" while a dialog waits for the human.
+# "π > …" at an idle prompt, and "π ! …" while a dialog waits for the human.
 # The spinner is what "busy" means here; the dialog is read off the screen.
 #
 # The spinner cannot tell WORKING from WAITING, and the difference matters: an
@@ -113,8 +113,8 @@
 # truncated first line. Pass one line, or use --file for a path the target reads
 # itself.
 #
-# Usage and options live in usage() below, which `--help` / `-h` prints (
-# item 2): one copy, so the printed text cannot drift from a comment copy.
+# Usage and options live in usage() below, which `--help` / `-h` prints:
+# one copy, so the printed text cannot drift from a comment copy.
 
 
 set -euo pipefail
@@ -136,7 +136,7 @@ tab_state_of() { # $1 = window id
   printf '%s' "$out" | jq -r '.state // "unknown"' 2>/dev/null || printf 'unknown'
 }
 # The full --json verdict, or nothing with exit 1. The send proof below reads
-#.session and.lines off it.
+# .session and .lines off it.
 tab_state_json() { # $1 = window id
   [ -x "$STATE_SH" ] || return 1
   "$STATE_SH" "$1" --json 2>/dev/null || return 1
@@ -200,11 +200,11 @@ Options:
               poll or waiting to be told what is next: it spins, but there is
               no in-flight tool result to discard. Forwarded to the --queue
               waiter. A DIALOG still wins — that is the human's to answer, and
-              no pattern overrides it .
+              no pattern overrides it.
   --cancel    with --to: kill that window's queued waiter, if any, and
               nothing else. It kills the pid recorded at --queue time, never
               a pattern: `pkill -f` with the target's own argv also matches
-              the shell running the pkill .
+              the shell running the pkill (seen twice, exit 144).
   --quiet     only errors on stderr
 KITTY_SEND_USAGE
 }
@@ -300,7 +300,7 @@ queue_pidfile() { printf '%s/queue-%s.pid' "$QUEUE_DIR" "$1"; }
 queue_logfile() { printf '%s/queue-%s.log' "$QUEUE_DIR" "$1"; }
 
 # A bare window id as the first argument is --to:
-# `kitty-send.sh 214 --text...`. Only a bare integer is unambiguous enough
+# `kitty-send.sh 214 --text ...`. Only a bare integer is unambiguous enough
 # to take; anything else still falls through to the "unknown argument" error.
 case "${1:-}" in
   ''|*[!0-9]*) : ;;

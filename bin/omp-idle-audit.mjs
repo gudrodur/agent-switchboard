@@ -15,7 +15,7 @@
 // completed"; (b) a `hub` toolResult row whose text carries a completion
 // heading "### bg_N [bash] — completed|failed|cancelled" (em dash as written
 // by the harness; hyphen and en dash also accepted). Entries under a
-// "## Still Running" section ("- `bg_N` [bash] —...") are NOT completions.
+// "## Still Running" section ("- `bg_N` [bash] — ...") are NOT completions.
 // Job ids are reused after completion, so a start re-adds the id.
 //
 // The script walks each file in order, tracks started but not completed jobs
