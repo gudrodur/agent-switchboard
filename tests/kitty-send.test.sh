@@ -495,5 +495,25 @@ fi
 rm -rf "$T20"
 
 echo
+# 21. SLASH COMMAND TO A LINKED TAB. The window has a session file, so a
+#     normal send is proven by a new role:user row; a slash command writes
+#     none, so the proof is the screen changing. A plain `cat` window linked
+#     to a fabricated session echoes the command, which changes the screen.
+W21=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" cat 2>/dev/null)
+WINDOWS+=("$W21")
+sleep 1
+W21_PID=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W21" '.[].tabs[].windows[] | select(.id == $id) | .pid')
+W21_CWD=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W21" '.[].tabs[].windows[] | select(.id == $id) | .cwd // ""')
+W21_PTS=$(readlink "/proc/$W21_PID/fd/0" 2>/dev/null | sed 's|/dev/pts/||')
+STATEDIR21=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-state21.XXXXXX")
+NOW21=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+NOW21MS=$(($(date +%s%3N) - 5000))
+printf '{"type":"session","version":3,"id":"01selftest21","timestamp":"%s","cwd":"%s"}\n' "$NOW21" "$W21_CWD" > "$STATEDIR21/tab.jsonl"
+printf '{"type":"message","id":"a21","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop","timestamp":%s}}\n' "$NOW21MS" >> "$STATEDIR21/tab.jsonl"
+printf '%s\n%s\n' "$W21_CWD" "$STATEDIR21/tab.jsonl" > "$STATEDIR21/pts-$W21_PTS"
+OUT=$(OMP_TAB_STATE_DIR="$STATEDIR21" "$SEND" --to "$W21" --text "/selftest-slash-$$" --timeout 6 2>&1); RC=$?
+check "slash command to a linked tab is proven by the screen" 0 "slash command" "$RC" "$OUT"
+rm -rf "$STATEDIR21"
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

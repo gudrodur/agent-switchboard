@@ -690,7 +690,9 @@ EXPECT_HEAD_SQUASHED=$(printf '%s' "$EXPECT_HEAD" | tr -d '[:space:]')
 # remove — empty snapshot, stale head on screen, false green — so a failed
 # read sends nothing and exits 3: go look. The exit status of the read is the
 # test, never the emptiness of its output.
-if [ "$STATE_KNOWN" = 0 ]; then
+# A slash command is snapshotted even on a linked tab: it writes no session
+# row, so the screen changing is its only proof.
+if [ "$STATE_KNOWN" = 0 ] || [ "$SLASH_SEND" = 1 ]; then
   if ! before_screen=$(kitty @ get-text --match "id:$WID" --extent all 2>/dev/null | tr -d '[:space:]'); then
     die "could not read window $WID's screen before the send (nothing was sent) — look at the window first" 3
   fi
@@ -764,6 +766,15 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   if [ "$STATE_KNOWN" = 1 ]; then
     if tail -n "+$((TAB_LINES + 1))" "$TAB_SESSION" 2>/dev/null | grep -q '"role":"user"'; then
       confirmed=1; where="proved by session row (a new role:user message reached the tab's session file)"; break
+    fi
+    # A slash command runs in the terminal client and writes no session row
+    # (measured 2026-09-12: four /join sends reported "no new role:user row"
+    # although each had run). Its proof is the screen changing since the snapshot.
+    if [ "$SLASH_SEND" = 1 ]; then
+      slash_screen=$(kitty @ get-text --match "id:$WID" --extent all 2>/dev/null | tr -d '[:space:]')
+      if [ -n "$slash_screen" ] && [ "$slash_screen" != "$before_screen" ]; then
+        confirmed=1; where="screen changed after the send (slash command: it writes no session row, so the screen is its proof; weaker than a session row)"; break
+      fi
     fi
   fi
   # Echo proofs below run ONLY when the state was unknown (no linked session
@@ -863,6 +874,12 @@ if [ "$STATE_KNOWN" = 1 ] && [ "$WAS_BUSY_BEFORE_SEND" = 1 ]; then
     note "message and wedges an agent. Look at the window first."
     exit 8
   fi
+fi
+if [ "$SLASH_SEND" = 1 ]; then
+  note "sent the slash command to window $WID, but its screen did not change within ${TIMEOUT}s."
+  note "A slash command writes no session row, so the screen is its only proof: look at the"
+  note "window for the command's effect before sending it again."
+  exit 3
 fi
 if [ "$STATE_KNOWN" = 1 ]; then
   note "sent to window $WID but no new role:user row reached its session file within ${TIMEOUT}s ($TAB_SESSION, was $TAB_LINES lines)."
