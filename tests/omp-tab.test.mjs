@@ -848,7 +848,7 @@ test('an allowed default whose session file names another model is closed with e
   assert.match(r.out + r.err, /WINDOW_ID=991001/, 'exit 3 still prints the window id');
   assert.match(r.err, /anthropic\/claude-opus-5/, 'the verdict names the model it found');
   assert.match(await closedArgs(), /991001/, 'the mismatched window was closed');
-  assert.equal(await wasSent(), false, 'nothing is sent to a mismatched tab');
+  assert.equal(await wasSent(), true, 'the proof runs after the brief is sent (omp writes the file then)');
 });
 
 test('a session file naming the launched model passes', async () => {
@@ -867,6 +867,34 @@ test('a session file naming the launched model passes', async () => {
   assert.equal(await launched(), true);
 });
 
+// omp writes the session file only at the first persisted message (measured
+// 2026-09-13: a tab sent nothing wrote no file in 20 s). The proof must wait
+// for the send; placed before it, this case exited 3 and every real launch
+// was refused.
+test('a session file that appears only after the brief is sent is proven', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const dir = await fs.mkdtemp(path.join(stateDir, 'sess-late-'));
+  const sess = await writeLinkSession(dir, 'opencode-go/muse-spark-1.3-contributor');
+  const body = await fs.readFile(sess, 'utf8');
+  await fs.rm(sess);
+  const userRow = `{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"brief"}],"timestamp":${Date.now()}}}\n`;
+  let written = false;
+  const timer = setInterval(async () => {
+    if (written) return;
+    const sent = await fs.access(path.join(stateDir, 'sent')).then(() => true, () => false);
+    if (sent) { written = true; await fs.writeFile(sess, body + userRow); }
+  }, 100);
+  try {
+    const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, OMP_TAB_STATE_DIR: dir, OMP_TAB_STATE_PTS_N: LINK_PTS });
+    assert.equal(written, true, 'the fixture wrote the session file only once the brief was sent');
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.err, /proven from the tab's session file/);
+  } finally {
+    clearInterval(timer);
+  }
+});
+
 test('a missing session file closes the window with exit 3', async () => {
   await reset(NEW_TUI);
   const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
@@ -879,5 +907,5 @@ test('a missing session file closes the window with exit 3', async () => {
   assert.equal(r.code, 3, `${r.out}${r.err}`);
   assert.match(r.err, /could not prove the launch model/, '"could not check" says so');
   assert.match(await closedArgs(), /991001/, 'the unproven window was closed');
-  assert.equal(await wasSent(), false, 'nothing is sent to an unproven tab');
+  assert.equal(await wasSent(), true, 'the proof runs after the brief is sent (omp writes the file then)');
 });
