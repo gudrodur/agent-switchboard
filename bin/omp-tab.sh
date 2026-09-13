@@ -604,7 +604,7 @@ fi
 # skips the overlay and restores today's full discovery. The overlay is
 # NOT passed to the --tools probe above: that gate validates names omp
 # accepts, and under lean the mcp__* names would not resolve.
-LEAN_YML="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../config/omp-tab-lean.yml"
+LEAN_YML="${OMP_TAB_LEAN_YML:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../config/omp-tab-lean.yml}"
 if [ -z "$MCP_FULL" ]; then
   [ -r "$LEAN_YML" ] || die "lean MCP overlay not readable: $LEAN_YML"
 fi

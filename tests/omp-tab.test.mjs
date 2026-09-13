@@ -771,6 +771,15 @@ test('an unknown --mcp value refuses and launches nothing', async () => {
   assert.equal(await launched(), false);
 });
 
+test('OMP_TAB_LEAN_YML overrides the checkout overlay on a default launch', async () => {
+  await reset(NEW_TUI);
+  const custom = path.join(stateDir, 'custom-lean.yml');
+  await fs.writeFile(custom, 'disabledProviders: []\n');
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_LEAN_YML: custom });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(await launchArgs(), new RegExp(`--config ${custom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the setting wins over the checkout default');
+});
+
 test('the lean overlay disables project config and the third-party providers', async () => {
   const yml = await fs.readFile(LEAN_YML, 'utf8');
   assert.match(yml, /^mcp:\n  enableProjectConfig: false$/m, 'project-root mcp.json files are excluded');

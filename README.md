@@ -112,6 +112,7 @@ Every variable, its default, and what reads it — taken from the code, not from
 | `OMP_TAB_PROVIDERS` | `<checkout>/config/omp-providers.json` | `bin/omp-tab.sh`: provider table for the preflight and fallback walk |
 | `OMP_TAB_PROBE_TIMEOUT` | `60` (seconds) | `bin/omp-tab.sh`: per-provider serve probe |
 | `OMP_TAB_CONFIG` | `$HOME/.omp/agent/config.yml` | `bin/omp-tab.sh`: account default model when `--model` is absent |
+| `OMP_TAB_LEAN_YML` | `<checkout>/config/omp-tab-lean.yml` | `bin/omp-tab.sh`: the lean MCP overlay a default launch carries (uncomment its skills example for user skills) |
 | `OMP_TAB_STATE_DIR` | `$HOME/.omp/agent/terminal-sessions` | `bin/omp-tab-state.sh`: window-to-session links (omp's own directory — omp writes them, not this repo) |
 | `OMP_TAB_STATE_SESSIONS_DIR` | `$HOME/.omp/agent/sessions` | `bin/omp-tab-state.sh`: canonical sessions dir the link arbitration prefers |
 | `CLAUDE_CODE_SESSION_ID` | null (address by cwd only) | `hooks/claude/mailbox-inject.mjs`, `bin/agent-send.mjs`: Runtime A session identity |
