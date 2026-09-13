@@ -8,21 +8,35 @@
 # from its brief file and coordinates over omp hooks (not MCP), so it needs
 # none of them.
 #
-# How, per omp v18.1.17 (docs/mcp-config.md in oh-my-pi):
+# How, per omp v18.1.19 (docs/mcp-config.md + packages/coding-agent/src in
+# oh-my-pi, re-read 2026-09-13):
 # - `disabledProviders` hides every capability from the named discovery
 #   sources — MCP servers included, regardless of which tool config
-#   (.claude.json, .cursor/mcp.json, …) introduced them. Name-based
-#   `disabledServers` would need updating every time a source adds one.
-#   Side effect, stated plainly: rules, skills, commands and settings from
-#   those same sources are off too. OMP-native config and extensions stay
-#   on, so a project `.omp/mcp.json` still applies under lean.
+#   (.claude.json, .cursor/mcp.json, …) introduced them. It is global
+#   across capabilities, so there is no per-capability "MCP off, skills on"
+#   provider switch, and `disabledServers` is NOT a config.yml key at all —
+#   it lives in MCP files, so naming servers here is silently ignored
+#   (measured: a top-level `disabledServers` naming every server still
+#   spawned its children). OMP-native config and extensions stay on.
+# - `skills.customDirectories` re-adds the user's Claude skills through the
+#   `custom` skills provider, which `disabledProviders: [claude]` does not
+#   touch. That is what keeps user skills working under lean. The stanza at
+#   the bottom is a commented example: uncomment it and point it at your
+#   own skills directory.
 # - `mcp.enableProjectConfig: false` excludes the project-root fallback
 #   files (`mcp.json` / `.mcp.json`), which no provider id covers.
-# Proof (headless, stdin closed, 2026-09-12): `omp -p --no-session --config
-# <this file>` spawns zero child processes for the whole run and answers;
-# without it the same run spawns ~9 MCP children and the tree peaks near
-# 700 MB PSS (omp itself included).
-mcp.enableProjectConfig: false
+# - Nested mapping form, not dotted keys: measured 2026-09-13 that a dotted
+#   `skills.customDirectories` overlay is silently ignored (probe skill
+#   unknown with or without `disabledProviders`) while the nested form
+#   below loads it. The old dotted `mcp.enableProjectConfig` is nested
+#   for the same reason.
+# Proof (headless, stdin closed, 2026-09-13,
+# `omp -p --no-session --model opencode-go/muse-spark-1.3-contributor
+# --config <this file>` asked to read a user skill and print its first
+# heading): prints the heading, peak transitive descendants 0 for the whole
+# run; the same run without this file prints it with 12 descendants.
+mcp:
+  enableProjectConfig: false
 disabledProviders:
   - claude
   - codex
@@ -32,3 +46,10 @@ disabledProviders:
   - windsurf
   - marketplace
   - vscode
+# User skills back through the custom provider (commented example, not a
+# live default: the directory is per-machine — uncomment and point it at
+# your own Claude skills directory, e.g. ~/.claude/skills on this machine.
+# Without it lean tabs start with zero MCP children but no user skills).
+# skills:
+#   customDirectories:
+#     - ~/.claude/skills

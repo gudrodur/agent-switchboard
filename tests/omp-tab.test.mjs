@@ -773,9 +773,11 @@ test('an unknown --mcp value refuses and launches nothing', async () => {
 
 test('the lean overlay disables project config and the third-party providers', async () => {
   const yml = await fs.readFile(LEAN_YML, 'utf8');
-  assert.match(yml, /^mcp\.enableProjectConfig: false$/m, 'project-root mcp.json files are excluded');
+  assert.match(yml, /^mcp:\n  enableProjectConfig: false$/m, 'project-root mcp.json files are excluded');
   for (const p of ['claude', 'codex', 'gemini', 'opencode', 'cursor', 'windsurf', 'marketplace', 'vscode'])
     assert.match(yml, new RegExp(`^  - ${p}$`, 'm'), `provider ${p} is denied`);
+  assert.doesNotMatch(yml, /^\w+\.\w+:/m, 'no dotted overlay key remains (silently ignored)');
+  assert.match(yml, /^# skills:\n#   customDirectories:\n#     - \S+$/m, 'the skills stanza ships as a commented example, never a personal path');
 });
 
 // ---- The allowlist and the session-file model proof ----

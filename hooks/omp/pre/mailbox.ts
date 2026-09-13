@@ -82,6 +82,37 @@ import {
 // (one small-file read per tick) to be cheap on every parked tab.
 export const IDLE_POLL_MS = 5000;
 
+// Presence keepalive: a supervisor idle ~30 min, or stuck in one long busy
+// turn, ages past the 20-min presence window, so agent-send stops seeing its
+// mailbox flag and every steer falls back to kitty-send. Per-turn
+// recordPresence never fires while parked or mid-turn, and the 5 s idle poll
+// below drains without re-touching presence. Touch the beacon well inside
+// the window; recordPresence merges, so turns keep working as before.
+export const PRESENCE_TOUCH_MS = 5 * 60 * 1000;
+// Re-touch our own presence beacon without disturbing what turns maintain.
+// branch/repo/windowId are read back and passed through (recordPresence
+// overwrites branch unconditionally, so omitting it would null it), and
+// mailbox:true re-asserts the consumer flag — which also self-heals a beacon
+// that already aged out (prune drops it, this re-adds it with the flag).
+export const touchPresenceBeacon = ({ cwd, sessionId = null, presenceFile = process.env.AGENT_SWITCHBOARD_PRESENCE_FILE ?? PRESENCE_FILE } = {}) => {
+  let branch = null;
+  let repo = null;
+  let windowId = null;
+  try {
+    const data = JSON.parse(fs.readFileSync(presenceFile, "utf8"));
+    const mine = (data.beacons ?? []).find(
+      (b) => `${b.sessionId ?? "anon"}:${b.cwd}` === `${sessionId ?? "anon"}:${cwd}`,
+    );
+    branch = mine?.branch ?? null;
+    repo = mine?.repo ?? null;
+    windowId = mine?.windowId ?? kittyWindowId();
+  } catch {
+    windowId = kittyWindowId();
+  }
+  recordPresence({ file: presenceFile, cwd, sessionId, branch, repo, mailbox: true, windowId });
+  return true;
+};
+
 const MESSAGE_TYPE = "mailbox";
 
 export const DELIVERY_FOR_PRIORITY = {
@@ -266,13 +297,24 @@ export default function mailboxHook(pi: HookAPI): void {
       }
     }
   };
-
-  // Idle watcher + fallback poll, one pair per session. The runner builds a
-  // fresh ctx per event but isIdle() closes over the live agent state
-  // (runner.ts #isIdleFn), so the captured isIdle stays live in callbacks.
   let idleWatcher = null;
   let idlePoll = null;
   let draining = false;
+  // One touch clock shared by the idle poll and the busy-turn tool handler:
+  // both paths touch at most once per PRESENCE_TOUCH_MS, well inside the
+  // 20-min presence window. Best-effort and advisory like the rest.
+  let lastTouchMs = 0;
+  const touchThrottled = ({ cwd, sessionId }) => {
+    const nowMs = Date.now();
+    if (nowMs - lastTouchMs < PRESENCE_TOUCH_MS) return false;
+    lastTouchMs = nowMs;
+    try {
+      touchPresenceBeacon({ cwd, sessionId });
+    } catch {
+      // next window retries
+    }
+    return true;
+  };
   const stopIdle = () => {
     try {
       idleWatcher.close();
@@ -304,6 +346,7 @@ export default function mailboxHook(pi: HookAPI): void {
       } finally {
         draining = false;
       }
+      touchThrottled({ cwd, sessionId });
     };
     try {
       fs.mkdirSync(MAILBOX_DIR, { recursive: true });
@@ -367,6 +410,15 @@ export default function mailboxHook(pi: HookAPI): void {
       deliver(ctx);
     } catch {
       // deliver() already reported the failure as a message
+    }
+    // Busy-turn keepalive: a working tab's turn never ends while it runs,
+    // so neither a new turn_start nor the parked-tab poll ever fires —
+    // without this the beacon ages out mid-turn. Shares the idle poll's
+    // touch clock.
+    try {
+      touchThrottled({ cwd: ctxCwd(ctx), sessionId: sessionIdOf(ctx?.sessionManager) });
+    } catch {
+      // presence is advisory; the drain above already ran
     }
   });
   pi.on("session_shutdown", async (_event, ctx) => {

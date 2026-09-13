@@ -357,7 +357,7 @@ test('no consumer falls through to the stub kitty-send with the argv', async () 
   fs.rmSync(fallbackArgv, { force: true });
   const { code, stderr } = await runSend(['--to', '991002', '--text', 'hello fallback']);
   assert.equal(code, 5);
-  assert.match(stderr, /agent-send: no consumer for 991002, falling back to kitty-send/);
+  assert.match(stderr, /agent-send: no mailbox consumer flag for 991002 \(live beacon, flag off\), falling back to kitty-send/);
   const argv = fs.readFileSync(fallbackArgv, 'utf-8').split('\n').filter(Boolean);
   assert.ok(argv.includes('--to') && argv.includes('991002'));
   assert.ok(argv.includes('--text') && argv.includes('hello fallback'));
@@ -793,4 +793,60 @@ test('a kitty-send exit 8 passes through as pending, never a failure', async () 
   );
   assert.equal(code, 8);
   assert.match(stderr, /kitty-send exit 8 for 991002: pending in the steering queue until the tool boundary, not lost; do not resend/);
+});
+
+// A kitty fallback that ends in exit 9 (composer held unsubmitted text,
+// nothing sent) must report non-zero plus one stderr line naming the queue
+// log; a fallback the target queues (exit 0 under --queue) must name the
+// queue log to confirm, since the verdict arrives later and asynchronously.
+test('a no-consumer fallback refused at a dirty composer (exit 9) names the queue log and stays non-zero', async () => {
+  const queueDir = path.join(binDir, 'xdg-run');
+  fs.mkdirSync(queueDir, { recursive: true });
+  const { code, stderr } = await runSend(
+    ['--to', '991002', '--text', 'dirty composer direct'],
+    childEnv({ AGENT_SEND_KITTY_SEND: realRulesStub, KITTY_SEND_STUB_EXIT: '9', XDG_RUNTIME_DIR: queueDir }),
+  );
+  assert.notEqual(code, 0, 'exit 9 must reach the caller as a failure');
+  assert.match(stderr, /kitty-send exit 9 for 991002: nothing was sent \(composer holds unsubmitted text\)/);
+  assert.match(stderr, new RegExp(`kitty queue log: ${queueDir}/kitty-send/queue-991002\\.log`));
+});
+
+test('a queued kitty fallback (exit 0 under --queue) names the queue log to confirm', async () => {
+  const queueDir = path.join(binDir, 'xdg-run');
+  fs.mkdirSync(queueDir, { recursive: true });
+  const queueStub = path.join(binDir, 'kitty-send-queued-stub.sh');
+  fs.writeFileSync(queueStub, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const { code, stderr } = await runSend(
+    ['--to', '991002', '--text', 'queued steer', '--queue'],
+    { ...childEnv(), AGENT_SEND_KITTY_SEND: queueStub, XDG_RUNTIME_DIR: queueDir },
+  );
+  assert.equal(code, 0);
+  assert.match(stderr, new RegExp(`kitty-send queued for 991002; .*confirm it in ${queueDir}/kitty-send/queue-991002\\.log`));
+});
+
+// A supervisor idle ~30 min ages past the 20-min presence window, so its
+// beacon (mailbox flag and all) is pruned. The fallback line must say WHY:
+// no beacon, stale beacon since <time>, or live beacon with the flag off.
+test('a steer to a window whose beacon went stale names the last tick', async () => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  try {
+    const old = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    fs.writeFileSync(presFile, JSON.stringify({ beacons: [
+      { sessionId: 's9', cwd: '/repo/b', mailbox: true, windowId: 991002, firstTick: old, lastTick: old },
+    ] }));
+    const { code, stderr } = await runSend(
+      ['--to', '991002', '--text', 'stale steer'],
+      childEnv({ CLAUDE_CODE_SESSION_ID: 's3' }),
+    );
+    assert.equal(code, 5);
+    assert.match(stderr, /stale mailbox beacon for 991002.*last tick .* past the presence window/);
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+});
+
+test('a live beacon without the flag says flag off', async () => {
+  const { code, stderr } = await runSend(['--to', '991002', '--text', 'flag off steer']);
+  assert.equal(code, 5);
+  assert.match(stderr, /no mailbox consumer flag for 991002 \(live beacon, flag off\)/);
 });
