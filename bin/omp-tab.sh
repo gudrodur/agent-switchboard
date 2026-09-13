@@ -683,54 +683,6 @@ done
 mdl=$(kitty @ get-text --match "id:$WID" 2>/dev/null | grep -oiE 'DeepSeek V4 [A-Za-z-]+( Vision[A-Za-z-]*)?|Muse Spark [A-Za-z0-9. -]*' | tail -1)
 mdl="${mdl% }"   # the bar pads the name; a trailing space made "Contributor  —"
 
-# Prove the launch model from the tab's session file.
-# modelRoles.default is shared by every omp session and a /model action can
-# rewrite it, so a launch that trusts it can land anywhere: a tab launched "as
-# anthropic/claude-opus-5" ran 5 assistant turns on Opus before a hand
-# switch (2026-09-13). The status bar sometimes names no model at all, and model_usage rows
-# lie (the first one said muse-spark under those 5 Opus rows), so neither is
-# proof. The FIRST model_change row is what the tab actually started on.
-# Resolved through omp-tab-state.sh (session= in its output); nothing here
-# resolves a window to a session file a second way.
-close_proven_window() {
-  kitty @ close-window --match "id:$WID" 2>/dev/null || true
-  sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
-}
-TAB_SESSION=""; TAB_MODEL=""
-for _ in $(seq 1 5); do
-  _stout=$("$STATE_TAB" "$WID" 2>/dev/null || true)
-  TAB_SESSION=$(printf '%s' "$_stout" | grep -o 'session=.*' | head -1 | sed 's/^session=//; s/ reason=.*$//')
-  case "$TAB_SESSION" in ""|"none") TAB_SESSION="" ;;
-    *) TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null) ;;
-  esac
-  [ -n "$TAB_MODEL" ] && break
-  sleep 2
-done
-if [ -z "$TAB_MODEL" ]; then
-  printf 'WINDOW_ID=%s\n' "$WID"
-  close_proven_window
-  die "could not prove the launch model: no session file or no model_change row for window $WID within ~10 s ($STATE_TAB says session=${TAB_SESSION:-none}). The window was closed and nothing was sent: \"could not check\" is not a pass." 3
-fi
-if [ "$TAB_MODEL" != "$EFFECTIVE" ]; then
-  printf 'WINDOW_ID=%s\n' "$WID"
-  close_proven_window
-  die "tab is running model $TAB_MODEL (first model_change row in $TAB_SESSION) but was launched as $EFFECTIVE. The window was closed and nothing was sent." 3
-fi
-if [ "$(tbl has_allowed)" = yes ]; then
-  _hit=0
-  while IFS= read -r _allow; do
-    [ -n "$_allow" ] || continue
-    [ "$_allow" = "$TAB_MODEL" ] && _hit=1
-  done < <(tbl allowed)
-  if [ "$_hit" != 1 ]; then
-    printf 'WINDOW_ID=%s\n' "$WID"
-    close_proven_window
-    die "tab is running model $TAB_MODEL, outside allowedModels in $PROVIDERS_JSON. The window was closed and nothing was sent." 3
-  fi
-fi
-# provider/model, not the pretty name alone: the bar cannot tell
-# opencode-go/deepseek-v4-flash from deepseek/deepseek-v4-flash.
-note "model: $TAB_MODEL (proven from the tab's session file) — launched as $EFFECTIVE"
 
 # A --model that did not take is the failure this flag exists to prevent, so it is
 # an exit and not a note. Compare loosely: the status bar prettifies the id
@@ -771,6 +723,62 @@ MSG="$MSG Use absolute paths and 'git -C <dir> ...'; do NOT rely on 'cd' — on 
 # and wedges it. Fall through to the started-working gate below instead, which
 # is the stronger signal anyway.
 "$SEND" --to "$WID" --text "$MSG" --quiet || note "arrival not confirmed by kitty-send; relying on the started-working gate"
+
+# Prove the launch model from the tab's session file. modelRoles.default is
+# shared by every omp session and a /model action can rewrite it, so a launch
+# that trusts it can land anywhere: on 2026-09-13 a tab launched "as
+# anthropic/claude-opus-5" ran 5 assistant turns on Opus before a hand
+# switch. The status bar sometimes names no model at all, and model_usage rows
+# lie, so neither is proof. The FIRST model_change row is what the tab started on.
+#
+# It runs AFTER the brief is sent, because omp writes the session file only at
+# the first persisted message: measured 2026-09-13, a tab that was sent nothing
+# wrote no file in 20 s while omp-tab-state.sh already named its path, and the
+# check placed before the send refused every launch. So a wrong-model tab has
+# the brief when it is caught; it is closed at once, and the verdict says the
+# brief was sent. The allowlist gate above still refuses a disallowed model
+# before anything launches; this proof catches omp starting something other
+# than what it was asked for. Resolved through omp-tab-state.sh (session= in
+# its output); nothing here resolves a window to a session file a second way.
+close_proven_window() {
+  kitty @ close-window --match "id:$WID" 2>/dev/null || true
+  sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
+}
+TAB_SESSION=""; TAB_MODEL=""
+for _ in $(seq 1 8); do
+  _stout=$("$STATE_TAB" "$WID" 2>/dev/null || true)
+  TAB_SESSION=$(printf '%s' "$_stout" | grep -o 'session=.*' | head -1 | sed 's/^session=//; s/ reason=.*$//')
+  case "$TAB_SESSION" in ""|"none") TAB_SESSION="" ;;
+    *) TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null) ;;
+  esac
+  [ -n "$TAB_MODEL" ] && break
+  sleep 2
+done
+if [ -z "$TAB_MODEL" ]; then
+  printf 'WINDOW_ID=%s\n' "$WID"
+  close_proven_window
+  die "could not prove the launch model: no session file or no model_change row for window $WID within ~16 s of the send ($STATE_TAB says session=${TAB_SESSION:-none}). The brief had been sent; the window was closed at once: \"could not check\" is not a pass." 3
+fi
+if [ "$TAB_MODEL" != "$EFFECTIVE" ]; then
+  printf 'WINDOW_ID=%s\n' "$WID"
+  close_proven_window
+  die "tab is running model $TAB_MODEL (first model_change row in $TAB_SESSION) but was launched as $EFFECTIVE. The brief had been sent; the window was closed at once." 3
+fi
+if [ "$(tbl has_allowed)" = yes ]; then
+  _hit=0
+  while IFS= read -r _allow; do
+    [ -n "$_allow" ] || continue
+    [ "$_allow" = "$TAB_MODEL" ] && _hit=1
+  done < <(tbl allowed)
+  if [ "$_hit" != 1 ]; then
+    printf 'WINDOW_ID=%s\n' "$WID"
+    close_proven_window
+    die "tab is running model $TAB_MODEL, outside allowedModels in $PROVIDERS_JSON. The brief had been sent; the window was closed at once." 3
+  fi
+fi
+# provider/model, not the pretty name alone: the bar cannot tell
+# opencode-go/deepseek-v4-flash from deepseek/deepseek-v4-flash.
+note "model: $TAB_MODEL (proven from the tab's session file) — launched as $EFFECTIVE"
 
 # THE gate, and it asks a different question from kitty-send's. That one proves
 # the TEXT ARRIVED; this one proves omp STARTED WORKING on it. A tab can have the
