@@ -67,7 +67,7 @@ const usage = () => `Usage:
   --stop        priority stop: interrupts the consumer's current run
   --idle-when   priority idle (REGEX is the consumer's parked proof)
   --queue       priority queue; the ack wait below is unbounded unless --deadline caps it
-  --deadline N  seconds to wait for the ack row (default 20)
+  --deadline N  seconds to wait for the ack row (default 120)
   --read        print this session's unacked inbox rows and ack them (inbox read;
                 the session is CLAUDE_CODE_SESSION_ID unless --as names it)
   --cancel      withdraw one queued row so a later drain cannot deliver it
@@ -192,7 +192,12 @@ const main = (argv) => {
   if (text == null || text === '') die('pass --text LINE or --file /abs/path');
   if (deadline != null && !/^\d+$/.test(deadline)) die('--deadline must be a number of seconds');
   const priority = mode ?? 'now';
-  const deadlineMs = deadline != null ? Number(deadline) * 1000 : priority === 'queue' ? null : 20_000;
+  // Default ack wait: 120 s. A busy mailbox consumer acks only at its next
+  // tool boundary, and on a missed deadline this falls back to kitty-send,
+  // which under --now types into the busy tab and discards the tool result
+  // it was waiting for. A parked tab acks within seconds and a window with no
+  // consumer falls back at once, so only a busy target ever waits this long.
+  const deadlineMs = deadline != null ? Number(deadline) * 1000 : priority === 'queue' ? null : 120_000;
 
   pruneStale({});
 
