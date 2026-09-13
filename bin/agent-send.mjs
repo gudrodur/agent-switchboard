@@ -81,8 +81,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const kittySend = () => process.env.AGENT_SEND_KITTY_SEND ?? process.env.AGENT_SWITCHBOARD_SEND ?? path.join(HERE, 'kitty-send.sh');
 // kitty-send.sh exit codes that mean NOTHING WAS SENT (its header's table):
 // 1 usage or precondition, 4 a dialog was open, 5 the idle wait ran out, 6 a
-// send is already queued, 7 mid-turn without --now/--queue/--wait-idle.
-const KITTY_SENT_NOTHING = new Set([1, 4, 5, 6, 7]);
+// send is already queued, 7 mid-turn without --now/--queue/--wait-idle, 9
+// the composer already held a paste chip that is not kitty-send's own.
+const KITTY_SENT_NOTHING = new Set([1, 4, 5, 6, 7, 9]);
 
 // kitty-send.sh --file sends this note rather than the file's bytes (a path
 // the target reads itself); the mailbox text carries the same note so the
