@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -160 1000 740" width="1000" height="740" role="img" aria-label="Who can reach whom: two agent runtimes, each with a closed channel of its own, a custom cross-platform agent channel between them, and GitHub as the record."><style>
+  text { font-family: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  .node { fill: #1a201d; stroke: #e2e8e4; stroke-width: 1.2; }
+  .node-soft { fill: #232b27; stroke: #2f3834; stroke-width: 1; }
+  .group { fill: none; stroke: #2f3834; stroke-width: 1.2; stroke-dasharray: 2 4; }
+  .t-title { font-size: 13.5px; font-weight: 600; fill: #e2e8e4; }
+  .t-sub, .t-group { font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; fill: #9aa59f; }
+  .t-group { letter-spacing: 0.08em; }
+  .t-edge { font-size: 11.5px; fill: #e2e8e4; }
+  .t-closed { font-size: 11.5px; fill: #62b4cc; font-weight: 500; }
+  .t-closedb { font-size: 11.5px; fill: #79c9a0; font-weight: 500; }
+  .t-cross { font-size: 11.5px; fill: #e0a352; font-weight: 500; }
+  .t-gh { font-size: 11.5px; fill: #b9a2e0; font-weight: 500; }
+  .e { fill: none; stroke-width: 1.6; }
+  .e-ink { stroke: #e2e8e4; } .e-closed { stroke: #62b4cc; stroke-width: 2; } .e-closedb { stroke: #79c9a0; stroke-width: 2; }
+  .e-cross { stroke: #e0a352; stroke-width: 2; } .e-gh { stroke: #b9a2e0; stroke-width: 2; }
+  .e-dash { stroke-dasharray: 5 4; }
+  .halo { fill: none; stroke: #1a201d; stroke-width: 8; }
+  .m-ink { fill: #e2e8e4; } .m-closed { fill: #62b4cc; } .m-closedb { fill: #79c9a0; } .m-cross { fill: #e0a352; } .m-gh { fill: #b9a2e0; }
+</style><rect x="0" y="-160" width="1000" height="740" fill="#1a201d"/><line x1="20" y1="-136" x2="48" y2="-136" class="e e-closed"/><text x="56" y="-132" class="t-edge">Closed channel, Runtime A</text><line x1="241" y1="-136" x2="269" y2="-136" class="e e-closedb"/><text x="277" y="-132" class="t-edge">Closed shared-session channel, Runtime B</text><line x1="561" y1="-136" x2="589" y2="-136" class="e e-cross"/><text x="597" y="-132" class="t-edge">Cross-platform agent channel</text><line x1="801" y1="-136" x2="829" y2="-136" class="e e-gh"/><text x="837" y="-132" class="t-edge">GitHub</text><line x1="20" y1="-114" x2="48" y2="-114" class="e e-ink"/><text x="56" y="-110" class="t-edge">Launch, files, chat</text><line x1="201" y1="-114" x2="229" y2="-114" class="e e-ink e-dash"/><text x="237" y="-110" class="t-edge">Fallback or approval path</text>
+          <defs>
+            <marker id="m1-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-ink"/></marker>
+            <marker id="m1-closed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-closed"/></marker>
+            <marker id="m1-cross" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-cross"/></marker>
+            <marker id="m1-gh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-gh"/></marker>
+            <marker id="m1-closedb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-closedb"/></marker>
+          </defs>
+          <rect x="20" y="40" width="160" height="60" rx="4" class="node"/>
+          <text x="32" y="65" class="t-title">Human</text>
+          <text x="32" y="84" class="t-sub">the only human</text>
+
+          <rect x="260" y="20" width="260" height="300" rx="6" class="group"/>
+          <text x="272" y="40" class="t-group">RUNTIME A · LEAD AGENTS</text>
+          <rect x="280" y="56" width="220" height="56" rx="4" class="node"/>
+          <text x="292" y="79" class="t-title">Lead agent 1</text>
+          <text x="292" y="98" class="t-sub">one project</text>
+          <rect x="280" y="148" width="220" height="56" rx="4" class="node"/>
+          <text x="292" y="171" class="t-title">Lead agent 2</text>
+          <text x="292" y="190" class="t-sub">another project</text>
+          <rect x="280" y="240" width="220" height="56" rx="4" class="node"/>
+          <text x="292" y="263" class="t-title">Lead agent 3</text>
+          <text x="292" y="282" class="t-sub">a third project</text>
+
+          <rect x="700" y="20" width="280" height="300" rx="6" class="group"/>
+          <text x="712" y="40" class="t-group">RUNTIME B · DELEGATED AGENTS</text>
+          <rect x="720" y="56" width="240" height="56" rx="4" class="node"/>
+          <text x="732" y="79" class="t-title">Supervisor agent</text>
+          <text x="732" y="98" class="t-sub">runs the loop</text>
+          <rect x="720" y="148" width="240" height="56" rx="4" class="node"/>
+          <text x="732" y="171" class="t-title">Worker agents</text>
+          <text x="732" y="190" class="t-sub">one at a time · write code</text>
+          <rect x="720" y="240" width="240" height="56" rx="4" class="node"/>
+          <text x="732" y="263" class="t-title">Research and review agents</text>
+          <text x="732" y="282" class="t-sub">read-only</text>
+
+          <rect x="20" y="420" width="220" height="76" rx="4" class="node-soft"/>
+          <text x="32" y="446" class="t-title">Channel store</text>
+          <text x="32" y="466" class="t-sub">one row per message</text>
+          <text x="32" y="482" class="t-sub">acked by the consumer</text>
+          <rect x="290" y="420" width="260" height="76" rx="4" class="node-soft"/>
+          <text x="302" y="446" class="t-title">Shared files</text>
+          <text x="302" y="466" class="t-sub">plan · briefs · steers</text>
+          <text x="302" y="482" class="t-sub">reports · logs</text>
+          <rect x="640" y="420" width="340" height="76" rx="4" class="node-soft"/>
+          <text x="652" y="446" class="t-title">GitHub</text>
+          <text x="652" y="466" class="t-sub">issues · PRs · CI · merges</text>
+
+          <line x1="180" y1="70" x2="276" y2="76" class="e e-ink" marker-end="url(#m1-ink)"/>
+          <text x="220" y="60" text-anchor="middle" class="t-edge">tasks · rules</text>
+          <polyline points="100,100 100,176 276,176" class="e e-ink e-dash" marker-end="url(#m1-ink)"/>
+          <text x="108" y="168" class="t-edge">approves held messages</text>
+
+          <polyline points="504,98 536,98 536,268 504,268" class="e e-closed" marker-start="url(#m1-closed)" marker-end="url(#m1-closed)"/>
+          <line x1="536" y1="176" x2="504" y2="176" class="e e-closed" marker-end="url(#m1-closed)"/>
+          <text x="546" y="168" class="t-closed">closed channel</text>
+          <text x="546" y="184" class="t-closed">lists its peers</text>
+          <text x="546" y="200" class="t-edge">held if modes differ</text>
+          <line x1="536" y1="250" x2="672" y2="250" class="e e-closed"/>
+          <line x1="676" y1="243" x2="690" y2="257" class="e e-closed"/>
+          <line x1="690" y1="243" x2="676" y2="257" class="e e-closed"/>
+          <text x="546" y="240" class="t-edge">can't reach Runtime B</text>
+
+          <line x1="500" y1="70" x2="716" y2="70" class="e e-ink" marker-end="url(#m1-ink)"/>
+          <text x="609" y="62" text-anchor="middle" class="t-edge">launch · read state</text>
+          <line x1="500" y1="86" x2="716" y2="86" class="e e-cross e-dash" marker-end="url(#m1-cross)"/>
+          <text x="546" y="104" class="t-cross">terminal if no ack</text>
+
+          <polyline points="330,320 330,380 170,380 170,416" class="e e-cross" marker-end="url(#m1-cross)"/>
+          <text x="178" y="369" class="t-cross">sender writes a row</text>
+          <polyline points="90,418 90,300 256,300" class="e e-cross" marker-end="url(#m1-cross)"/>
+          <text x="98" y="322" class="t-cross">inbox hook</text>
+          <text x="98" y="337" class="t-edge">injects unacked rows</text>
+          <polyline points="130,496 130,548 990,548 990,84 964,84" class="e e-cross" marker-end="url(#m1-cross)"/>
+          <line x1="990" y1="176" x2="964" y2="176" class="e e-cross" marker-end="url(#m1-cross)"/>
+          <line x1="990" y1="268" x2="964" y2="268" class="e e-cross" marker-end="url(#m1-cross)"/>
+          <text x="560" y="540" text-anchor="middle" class="t-cross">consumer drains the row and acks · routed by terminal address</text>
+
+          <line x1="420" y1="320" x2="420" y2="419" class="e e-ink" marker-end="url(#m1-ink)"/>
+          <text x="414" y="398" text-anchor="end" class="t-edge">plan · briefs</text>
+          <text x="414" y="412" text-anchor="end" class="t-edge">steers</text>
+          <polyline points="720,320 720,360 520,360 520,419" class="e e-ink" marker-end="url(#m1-ink)"/>
+          <text x="620" y="348" text-anchor="middle" class="t-edge">reports · supervisor log</text>
+          <line x1="900" y1="320" x2="900" y2="419" class="e e-gh" marker-end="url(#m1-gh)"/>
+          <text x="892" y="372" text-anchor="end" class="t-gh">commit · push · PR</text>
+          <polyline points="490,320 490,396 700,396 700,419" class="halo"/>
+          <polyline points="490,320 490,396 700,396 700,419" class="e e-gh" marker-end="url(#m1-gh)"/>
+          <text x="628" y="387" text-anchor="middle" class="t-gh">verify · merge</text>
+
+          <rect x="720" y="-92" width="240" height="66" rx="4" class="node-soft"/>
+          <text x="732" y="-70" class="t-title">Session relay</text>
+          <text x="732" y="-52" class="t-sub">off this machine</text>
+          <text x="732" y="-37" class="t-sub">a link reads and prompts</text>
+          <line x1="940" y1="-26" x2="940" y2="53" class="e e-closedb" marker-start="url(#m1-closedb)" marker-end="url(#m1-closedb)"/>
+          <text x="932" y="4" text-anchor="end" class="t-closedb">host shares its session</text>
+          <polyline points="716,104 706,104 706,282 716,282" class="e e-closedb" marker-start="url(#m1-closedb)" marker-end="url(#m1-closedb)"/>
+          <line x1="706" y1="190" x2="716" y2="190" class="e e-closedb" marker-end="url(#m1-closedb)"/>
+          <text x="698" y="140" text-anchor="end" class="t-closedb">joined by link</text>
+          <polyline points="60,40 60,-60 716,-60" class="e e-closedb e-dash" marker-end="url(#m1-closedb)"/>
+          <text x="72" y="-68" class="t-closedb">joins by link, in a browser</text>
+        </svg>
