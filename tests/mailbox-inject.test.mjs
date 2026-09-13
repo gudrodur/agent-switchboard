@@ -7,6 +7,7 @@
 // (os.homedir()-based) lands in isolation too.
 //
 // Run: node --test tests/mailbox-inject.test.mjs
+import './helpers/isolate-setup.mjs';
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

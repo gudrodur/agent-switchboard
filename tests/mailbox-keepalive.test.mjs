@@ -5,6 +5,7 @@
 // must re-touch presence while the session is alive.
 //
 // Run: node --test tests/mailbox-keepalive.test.mjs (or the full suite)
+import './helpers/isolate-setup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -12,6 +12,7 @@
 // terminal-sessions dir; OMP_TAB_STATE_PTS_N overrides the /proc readlink.
 //
 // Run: node --test tests/omp-tab-state.test.mjs
+import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';

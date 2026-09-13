@@ -12,6 +12,7 @@
 // configured payload after the send marker is touched.
 //
 // Run: node --test tests/kitty-send-proof.test.mjs  (or the full suite)
+import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';

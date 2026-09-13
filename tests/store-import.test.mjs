@@ -9,6 +9,7 @@
 //
 // Run: node --test tests/store-import.test.mjs (or the full suite)
 
+import './helpers/isolate-setup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
