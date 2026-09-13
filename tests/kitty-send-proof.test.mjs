@@ -106,7 +106,10 @@ test('a slash command on an unchanged screen still reports exit 3', async () => 
   await reset('idle prompt before the send\n');
   const r = await runScript(['--to', WID, '--text', '/mcp reauth Neon', '--timeout', '3']);
   assert.equal(r.code, 3, `${r.out}${r.err}`);
-  assert.match(r.err, /could not observe it on screen/);
+  // A slash command's failure note says to look at the screen for its effect,
+  // since it writes no session row, not the generic echo note.
+  assert.match(r.err, /screen did not change/);
+  assert.match(r.err, /look at the/);
 });
 
 test('a plain message is NOT confirmed by a changed screen alone', async () => {
