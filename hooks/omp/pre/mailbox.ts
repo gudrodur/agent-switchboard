@@ -384,16 +384,18 @@ export default function mailboxHook(pi: HookAPI): void {
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    const cwd = ctxCwd(ctx);
+    const sessionId = sessionIdOf(ctx?.sessionManager);
+    // A session-less run (omp -p --no-session) has no session id and can
+    // never receive mail: record no beacon and start no idle watcher, so it
+    // leaves nothing behind. Sessions with an id behave exactly as before.
+    if (sessionId == null) return;
     try {
-      const cwd = ctxCwd(ctx);
-      const sessionId = sessionIdOf(ctx?.sessionManager);
       flagAtStart({ cwd, sessionId });
     } catch {
       // presence is advisory; never break session start
     }
     try {
-      const cwd = ctxCwd(ctx);
-      const sessionId = sessionIdOf(ctx?.sessionManager);
       startIdle({ cwd, sessionId, isIdle: () => ctx.isIdle() });
     } catch {
       // watcher is advisory; the in-turn drains still deliver

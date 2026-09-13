@@ -18,11 +18,14 @@ import {
   readUnackedBySession,
   recipientKey,
 } from '../lib/agent-mailbox.mjs';
-import {
+import mailboxHook, {
   drainInbox,
   deliverIdle,
   watchMatches,
 } from '../hooks/omp/pre/mailbox.ts';
+import { MAILBOX_DIR } from '../lib/agent-mailbox.mjs';
+import { defaultStorePath } from '../lib/store.mjs';
+import { readAllPresence } from '../lib/presence.mjs';
 
 const CWD = '/example/proj';
 const OLD_CWD = '/example/old-proj';
@@ -130,4 +133,45 @@ test('watchMatches without a session id matches only the current key file', () =
   const exact = `${recipientKey({ cwd: CWD, sessionId: null })}.jsonl`;
   assert.equal(watchMatches(exact, { cwd: CWD, sessionId: null }), true);
   assert.equal(watchMatches(`${recipientKey({ cwd: OLD_CWD, sessionId: null })}.jsonl`, { cwd: CWD, sessionId: null }), false);
+});
+
+// session_start with no session id (every omp -p --no-session run) records no
+// beacon and starts no idle watcher: nothing may reach the default store.
+// Hermetic through the filesystem: flagAtStart would create the store file,
+test('session_start with no session id writes no beacon and starts no watcher', async () => {
+  const savedOmpSid = process.env.OMP_SESSION_ID;
+  delete process.env.OMP_SESSION_ID;
+  try {
+    assert.equal(fs.existsSync(defaultStorePath()), false, 'no earlier test in this file touches the default store');
+    assert.equal(fs.existsSync(MAILBOX_DIR), false, 'no earlier test in this file touches the default mailbox dir');
+    const handlers = {};
+    mailboxHook({ on: (ev, fn) => { handlers[ev] = fn; }, sendMessage: () => {} });
+    await handlers.session_start({}, { cwd: '/example/session-less', sessionManager: null });
+    assert.equal(fs.existsSync(defaultStorePath()), false, 'a session-less start must not create the store file');
+    assert.equal(fs.existsSync(MAILBOX_DIR), false, 'a session-less start must not mkdir the mailbox dir');
+  } finally {
+    if (savedOmpSid === undefined) delete process.env.OMP_SESSION_ID;
+    else process.env.OMP_SESSION_ID = savedOmpSid;
+  }
+});
+
+// Control for the case above: the same harness with a session id DOES record
+// a beacon, so the null case passes for the right reason. Shuts down after
+// to stop the idle watcher and poll it started (no dangling timers).
+test('session_start with a session id records a beacon (control)', async () => {
+  const savedOmpSid = process.env.OMP_SESSION_ID;
+  process.env.OMP_SESSION_ID = 'hook-start-ctrl';
+  try {
+    const handlers = {};
+    mailboxHook({ on: (ev, fn) => { handlers[ev] = fn; }, sendMessage: () => {} });
+    await handlers.session_start({}, { cwd: '/example/session-full', sessionManager: null, isIdle: () => false });
+    assert.equal(fs.existsSync(defaultStorePath()), true, 'a session start must create the store file');
+    const mine = readAllPresence().find((b) => b.cwd === '/example/session-full');
+    assert.ok(mine, 'a session start must record a beacon for its cwd');
+    assert.equal(mine.sessionId, 'hook-start-ctrl');
+    await handlers.session_shutdown({}, { cwd: '/example/session-full', sessionManager: null, isIdle: () => false });
+  } finally {
+    if (savedOmpSid === undefined) delete process.env.OMP_SESSION_ID;
+    else process.env.OMP_SESSION_ID = savedOmpSid;
+  }
 });

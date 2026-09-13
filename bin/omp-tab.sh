@@ -414,6 +414,30 @@ if [ -n "$KEY_COMMAND" ]; then
   KEY_PREFIX="eval \"\$($KEY_COMMAND)\" && "
 fi
 
+# Every headless probe below is a session-less omp run, and every omp run
+# fires its session_start hook — so an unisolated probe registers a presence
+# beacon with this shell's KITTY_WINDOW_ID (session id null), which makes
+# window-addressed mail to the launcher ambiguous until it ages out. Run each
+# probe with no window id and throwaway store paths, so even an older hook on
+# any machine registers nothing and leaves nothing behind. Result handling
+# stays with the caller; stdin/redirection pass through to omp.
+probe_omp() {
+  local probe_tmp rc
+  probe_tmp="$(mktemp -d "${TMPDIR:-/tmp}/omp-tab-probe-XXXXXX")"
+  env -u KITTY_WINDOW_ID \
+    "AGENT_SWITCHBOARD_DB=$probe_tmp/state.db" \
+    "AGENT_SWITCHBOARD_DIR=$probe_tmp/switchboard" \
+    "XDG_STATE_HOME=$probe_tmp/xdg" \
+    "AGENT_SWITCHBOARD_MAILBOX_DIR=$probe_tmp/mailbox" \
+    "AGENT_MAILBOX_DIR=$probe_tmp/mailbox" \
+    "AGENT_SWITCHBOARD_PRESENCE_FILE=$probe_tmp/presence.json" \
+    "AGENT_MAILBOX_PRESENCE_FILE=$probe_tmp/presence.json" \
+    timeout "$PROBE_TIMEOUT" omp "$@"
+  rc=$?
+  rm -rf "$probe_tmp"
+  return "$rc"
+}
+
 # preflight MODEL — returns 0 if the provider can serve, else 1 with the reason
 # in PF_REASON. An empty MODEL probes the bare launch, which is what the tab
 # would run.
@@ -456,10 +480,10 @@ except Exception:
       # will see is what gets exercised (measured 2026-09-09: 5.4 s inside a
       # project with a .mcp.json, 4.4 s outside one).
       if [ -n "$m" ]; then
-        out="$(cd "$CWD" && timeout "$PROBE_TIMEOUT" omp -p --no-session --model "$m" --tools read \
+        out="$(cd "$CWD" && probe_omp -p --no-session --model "$m" --tools read \
                <<< "Reply with exactly the word OK and nothing else." 2>&1)"; rc=$?
       else
-        out="$(cd "$CWD" && timeout "$PROBE_TIMEOUT" omp -p --no-session --tools read \
+        out="$(cd "$CWD" && probe_omp -p --no-session --tools read \
                <<< "Reply with exactly the word OK and nothing else." 2>&1)"; rc=$?
       fi
       [ "$rc" -eq 0 ] && return 0
@@ -579,7 +603,7 @@ fi
 # start (~3 s, MCP discovery dominates) and only when --tools is passed; a
 # bare launch names nothing and skips this entirely.
 if [ -n "$TOOLS" ]; then
-  TOOLS_OUT="$(cd "$CWD" && timeout "$PROBE_TIMEOUT" omp -p --no-session --tools "$TOOLS" </dev/null 2>&1)"; TOOLS_RC=$?
+  TOOLS_OUT="$(cd "$CWD" && probe_omp -p --no-session --tools "$TOOLS" </dev/null 2>&1)"; TOOLS_RC=$?
   if [ "$TOOLS_RC" -eq 124 ]; then
     die "preflight: --tools probe hung for $PROBE_TIMEOUT s; nothing launched. A hang is the environment, not the flag — re-run, and if it repeats run the probe by hand with stdin closed (< /dev/null)."
   elif [ "$TOOLS_RC" -ne 0 ]; then
