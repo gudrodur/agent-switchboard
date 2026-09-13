@@ -7,12 +7,14 @@
 // (os.homedir()-based) lands in isolation too.
 //
 // Run: node --test tests/mailbox-inject.test.mjs
+import './helpers/isolate-setup.mjs';
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 import { appendMessage, readUnacked, recipientKey } from '../lib/agent-mailbox.mjs';
 import { recordPresence } from '../lib/presence.mjs';
@@ -28,10 +30,13 @@ let root, mboxDir, homeDir, switchDir;
 const payload = JSON.stringify({ cwd: CWD, session_id: SID });
 
 const runHook = (env = {}) => {
+  // Every spawned run gets temp store paths (never the live lock dir): the
+  // presence pin must name switchDir/presence.json, which presenceBeacons()
+  // below reads back.
   const res = spawnSync('node', [HOOK], {
     input: payload,
     encoding: 'utf-8',
-    env: { ...process.env, HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, ...env },
+    env: isolatedEnv({ HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, AGENT_SWITCHBOARD_PRESENCE_FILE: path.join(switchDir, 'presence.json'), ...env }),
   });
   return res;
 };
@@ -103,7 +108,7 @@ test('a row under the pre-move key is delivered when the hook runs from the new 
   const res = spawnSync('node', [HOOK], {
     input: JSON.stringify({ cwd: '/repo/wt-a', session_id: SID }),
     encoding: 'utf-8',
-    env: { ...process.env, HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir },
+    env: isolatedEnv({ HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, AGENT_SWITCHBOARD_PRESENCE_FILE: path.join(switchDir, 'presence.json') }),
   });
   assert.equal(res.status, 0);
   const parsed = JSON.parse(res.stdout);

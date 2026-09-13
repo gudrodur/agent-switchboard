@@ -38,6 +38,8 @@
 // touch the watched files) cannot wake the agent in a loop. A slow poll backs
 // the watch in case an event is missed. Delivery itself is the
 // ack-first protocol: ack({deliveredAs}) per row, then pi.sendMessage.
+// In store mode the fs.watch fast path goes quiet (no key files to watch);
+// the 5 s poll still drains, so a parked tab keeps acking within ~5 s.
 //
 // Drain order per row: ack({deliveredAs}) FIRST, then pi.sendMessage. An ack
 // proves the hook read the row; a delivery without an ack is what the sender
@@ -59,10 +61,10 @@ import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  PRESENCE_FILE,
   recordPresence,
   releasePresence,
 } from "../../../lib/presence.mjs";
+import { readPresenceBeacons } from "../../../lib/agent-mailbox.mjs";
 import { kittyWindowId } from "../lib/window-id.ts";
 // Explicit `.ts` specifier (the source used the compiled `.js` extension):
 // node >= 24 type-stripping resolves this with no build step, which is what
@@ -94,13 +96,17 @@ export const PRESENCE_TOUCH_MS = 5 * 60 * 1000;
 // overwrites branch unconditionally, so omitting it would null it), and
 // mailbox:true re-asserts the consumer flag — which also self-heals a beacon
 // that already aged out (prune drops it, this re-adds it with the flag).
-export const touchPresenceBeacon = ({ cwd, sessionId = null, presenceFile = process.env.AGENT_SWITCHBOARD_PRESENCE_FILE ?? PRESENCE_FILE } = {}) => {
+export const touchPresenceBeacon = ({ cwd, sessionId = null, presenceFile = undefined } = {}) => {
+  // Unfiltered read: a beacon past the presence window is still there to be
+  // re-touched (the old code read the raw file, never the pruned view), so
+  // its branch/windowId survive the resurrection.
+  const beaconOpts = { ...(presenceFile ? { presenceFile } : {}), includeStale: true };
+  const opts = presenceFile ? { file: presenceFile } : {};
   let branch = null;
   let repo = null;
   let windowId = null;
   try {
-    const data = JSON.parse(fs.readFileSync(presenceFile, "utf8"));
-    const mine = (data.beacons ?? []).find(
+    const mine = readPresenceBeacons(beaconOpts).find(
       (b) => `${b.sessionId ?? "anon"}:${b.cwd}` === `${sessionId ?? "anon"}:${cwd}`,
     );
     branch = mine?.branch ?? null;
@@ -109,7 +115,7 @@ export const touchPresenceBeacon = ({ cwd, sessionId = null, presenceFile = proc
   } catch {
     windowId = kittyWindowId();
   }
-  recordPresence({ file: presenceFile, cwd, sessionId, branch, repo, mailbox: true, windowId });
+  recordPresence({ ...opts, cwd, sessionId, branch, repo, mailbox: true, windowId });
   return true;
 };
 
@@ -136,31 +142,28 @@ export const sessionIdOf = (sessionManager) => {
 // Flag our own presence beacon as a mailbox consumer (or clear it). Runs
 // after recordPresence so the beacon exists; recordPresence's merge preserves
 // the field on later turns.
-export const setMailboxFlag = ({ cwd, sessionId = null, value, presenceFile = PRESENCE_FILE } = {}) => {
-  const raw = fs.readFileSync(presenceFile, "utf8");
-  const data = JSON.parse(raw);
-  const key = `${sessionId ?? "anon"}:${cwd}`;
-  let touched = false;
-  for (const b of data.beacons ?? []) {
-    if (`${b.sessionId ?? "anon"}:${b.cwd}` === key) {
-      b.mailbox = value;
-      touched = true;
-    }
-  }
-  if (!touched) return false;
-  const tmp = `${presenceFile}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, presenceFile);
+export const setMailboxFlag = ({ cwd, sessionId = null, value, presenceFile = undefined } = {}) => {
+  const opts = presenceFile ? { file: presenceFile } : {};
+  const mine = readPresenceBeacons({ ...(presenceFile ? { presenceFile } : {}), includeStale: true }).find(
+    (b) => `${b.sessionId ?? "anon"}:${b.cwd}` === `${sessionId ?? "anon"}:${cwd}`,
+  );
+  if (!mine) return false;
+  recordPresence({
+    ...opts, cwd, sessionId,
+    branch: mine.branch ?? null, repo: mine.repo ?? null,
+    mailbox: value, windowId: mine.windowId ?? null,
+  });
   return true;
 };
 
-export const flagAtStart = ({ cwd, sessionId = null, presenceFile = PRESENCE_FILE } = {}) => {
-  recordPresence({ file: presenceFile, cwd, sessionId, windowId: kittyWindowId() });
-  setMailboxFlag({ cwd, sessionId, value: true, presenceFile });
+export const flagAtStart = ({ cwd, sessionId = null, presenceFile = undefined } = {}) => {
+  const opts = presenceFile ? { file: presenceFile } : {};
+  recordPresence({ ...opts, cwd, sessionId, windowId: kittyWindowId() });
+  setMailboxFlag({ cwd, sessionId, value: true, ...(presenceFile ? { presenceFile } : {}) });
 };
 
-export const releaseAtShutdown = ({ cwd, sessionId = null, presenceFile = PRESENCE_FILE } = {}) => {
-  releasePresence({ file: presenceFile, sessionId, cwd });
+export const releaseAtShutdown = ({ cwd, sessionId = null, presenceFile = undefined } = {}) => {
+  releasePresence({ ...(presenceFile ? { file: presenceFile } : {}), sessionId, cwd });
 };
 
 

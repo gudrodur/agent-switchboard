@@ -18,6 +18,7 @@
 // completion (hub then async-result) that must not throw.
 //
 // Run: node --test tests/omp-idle-audit.test.mjs (or the full suite)
+import './helpers/isolate-setup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

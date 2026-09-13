@@ -14,6 +14,7 @@
 // key on.
 //
 // Run: node --test scripts/omp-tab.test.mjs
+import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -22,6 +23,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 
 const run = promisify(execFile);
 const SCRIPT = fileURLToPath(new URL('../bin/omp-tab.sh', import.meta.url));
@@ -183,7 +185,7 @@ before(async () => {
   // real binary (~/.local/bin/omp and kitty on the developer machine) and the
   // suite runs it with no visible difference. Refuse here, before any test.
   for (const name of STUBS) {
-    const got = await run('bash', ['-c', `command -v ${name}`], { env: { ...process.env, PATH: stubPath() } })
+    const got = await run('bash', ['-c', `command -v ${name}`], { env: isolatedEnv({ PATH: stubPath() }) })
       .then((r) => r.stdout.trim())
       .catch(() => '');
     assert.equal(
@@ -215,8 +217,7 @@ const launched = async () =>
 const runScript = async (args, extraEnv = {}) => {
   try {
     const r = await run(SCRIPT, args, {
-      env: {
-        ...process.env,
+      env: isolatedEnv({
         PATH: stubPath(),
         XDG_RUNTIME_DIR: stateDir,
         HOME: homeDir,
@@ -229,7 +230,7 @@ const runScript = async (args, extraEnv = {}) => {
         OMP_TAB_STATE_PTS_N: LINK_PTS,
         KEY_COMMAND: path.join(binDir, 'key-command'),
         ...extraEnv,
-      },
+      }),
       timeout: 60_000,
     });
     return { code: 0, out: r.stdout, err: r.stderr };

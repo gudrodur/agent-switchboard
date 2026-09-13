@@ -13,11 +13,13 @@
 //, so a flag pair kitty-send refuses fails here too.
 //
 // Run: node --test tests/agent-send.test.mjs
+import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
@@ -116,8 +118,7 @@ after(async () => {
 });
 
 const libOpts = () => ({ dir: mboxDir, presenceFile: presFile });
-const childEnv = (extra = {}) => ({
-  ...process.env,
+const childEnv = (extra = {}) => isolatedEnv({
   AGENT_MAILBOX_DIR: mboxDir,
   AGENT_MAILBOX_PRESENCE_FILE: presFile,
   AGENT_MAILBOX_KITTY: kittyStub,

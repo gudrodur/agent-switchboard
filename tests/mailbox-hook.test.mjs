@@ -6,6 +6,7 @@
 // type stripping (verified 2026-09-12: no build step needed).
 //
 // Run: node --test tests/mailbox-hook.test.mjs (or the full suite)
+import './helpers/isolate-setup.mjs';
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

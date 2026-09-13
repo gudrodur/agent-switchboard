@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import { recordPresence } from '../../lib/presence.mjs';
-import { MAILBOX_DIR, readUnackedBySession, ack } from '../../lib/agent-mailbox.mjs';
+import { mailboxFileDir, readUnackedBySession, ack } from '../../lib/agent-mailbox.mjs';
 // Whole stdin as a string. Resolves with whatever arrived when the stream
 // ends, errors, or the timeout fires, so the hook never hangs on a half-open
 // pipe. Inlined here (the only use) so this hook ships no library.
@@ -63,11 +63,16 @@ try {
   } catch {
     // No / malformed payload — fall back to process.cwd() + env session id.
   }
-  const dir = process.env.AGENT_MAILBOX_DIR ?? MAILBOX_DIR;
+  // Null while the store backs the mailbox (same choice agent-send.mjs makes
+  // through the lib default), so the two never read different stores. A
+  // legacy mailbox-dir env keeps the JSONL backend unless AGENT_SWITCHBOARD_DB
+  // is set, which wins — see mailboxFileDir.
+  const dir = mailboxFileDir();
+  const opts = dir ? { dir } : {};
   let found;
   try {
-    assertMailboxReadable(dir);
-    found = readUnackedBySession(sessionId, { dir });
+    if (dir) assertMailboxReadable(dir);
+    found = readUnackedBySession(sessionId, opts);
   } catch (e) {
     process.stdout.write(`[mailbox] could not read inbox: ${e.message ?? e}\n`);
     found = null;
@@ -75,7 +80,7 @@ try {
   if (found) {
     for (const { key, row } of found) {
       try {
-        ack({ key, id: row.id, deliveredAs: 'prompt', dir });
+        ack({ key, id: row.id, deliveredAs: 'prompt', ...opts });
       } catch {
         // Best-effort — the row is still printed below.
       }

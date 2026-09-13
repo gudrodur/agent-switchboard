@@ -12,6 +12,7 @@
 // configured payload after the send marker is touched.
 //
 // Run: node --test tests/kitty-send-proof.test.mjs  (or the full suite)
+import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -19,6 +20,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
 const run = promisify(execFile);
@@ -83,7 +85,7 @@ const reset = async (after = null, opts = {}) => {
 const runScript = async (args, extraEnv = {}) => {
   try {
     const r = await run(SCRIPT, args, {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...extraEnv },
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...extraEnv }),
       timeout: 30_000,
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -214,7 +216,7 @@ test('a new role:user row in the session file proves the send', async () => {
   await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
   try {
     const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the tab', '--timeout', '8'], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...stateEnv() },
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...stateEnv() }),
     });
     await new Promise((r) => setTimeout(r, 1500));
     await fs.appendFile(stateFile(), sUser(Date.now()) + '\n');
@@ -269,7 +271,7 @@ test('a --now send to a mid-turn tab still confirms when the row lands at the to
   await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
   try {
     const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the tab', '--timeout', '8', '--now'], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...stateEnv() },
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...stateEnv() }),
     });
     await new Promise((r) => setTimeout(r, 1500));
     await fs.appendFile(stateFile(), sUser(Date.now()) + '\n');
