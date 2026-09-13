@@ -253,6 +253,34 @@ win_created() {
     | head -1
 }
 
+# The one Enter the chip branches press. kitty before 0.33.0 ignored --match on
+# `kitty @ send-key` (kitty changelog 0.33.0, iss 7192): measured 2026-09-13 on
+# a CI runner with kitty 0.32.2, the Enter never reached the target window. So
+# an older or unknown kitty gets a lone carriage return through send-text,
+# which has always honoured --match; 0.33.0 and later keep send-key, the path
+# proven live against a real composer.
+kitty_at_least_033() {
+  local v maj min
+  v=$(kitty --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  [ -n "$v" ] || return 1
+  maj=${v%%.*}; min=${v#*.}
+  [ "$maj" -gt 0 ] || [ "$min" -ge 33 ]
+}
+press_enter() { # $1 = window id
+  if kitty_at_least_033; then
+    kitty @ send-key --match "id:$1" enter 2>/dev/null || true
+  else
+    kitty @ send-text --match "id:$1" $'\r' 2>/dev/null || true
+  fi
+}
+enter_cmd_text() { # $1 = window id; the same Enter as a command a human can paste
+  if kitty_at_least_033; then
+    printf '%s' "kitty @ send-key --match id:$1 enter"
+  else
+    printf '%s' "kitty @ send-text --match id:$1 \$'\\r'"
+  fi
+}
+
 # Stranded-chip ownership. When
 # kitty-send leaves a chip it could not clear, it records, beside QUEUE_DIR:
 # the window id (the filename), the chip NUMBER(S) it left, the window's pid
@@ -695,7 +723,7 @@ if [ "$STATE_KNOWN" = 0 ] && printf '%s' "$before_screen" | grep -qF -- '[Pasted
   fi
   if [ "$_owned" = 1 ]; then
     note "window $WID's composer already holds unsubmitted pasted text (chips ${_chips_before}) left by an earlier kitty-send — pressing Enter once to recover it"
-    kitty @ send-key --match "id:$WID" enter 2>/dev/null || true
+    press_enter "$WID"
     _rec_deadline=$(( $(date +%s) + TIMEOUT ))
     _cleared=0
     while [ "$(date +%s)" -lt "$_rec_deadline" ]; do
@@ -711,7 +739,7 @@ if [ "$STATE_KNOWN" = 0 ] && printf '%s' "$before_screen" | grep -qF -- '[Pasted
       die "window $WID's composer still holds unsubmitted pasted text (chips ${_chips_before}) after Enter — nothing was sent. Do NOT send it again blind: a second send is what enqueues an empty steering message and wedges an agent. Look at the window first." 3
     fi
   else
-    die "window $WID's composer already holds unsubmitted pasted text (chips ${_chips_before}; owned by kitty-send: ${_owned_chips:-none}) — nothing was sent (exit 9): it may be a human's draft, and pressing Enter blindly could submit it early. To clear it by hand: kitty @ send-key --match id:$WID enter" 9
+    die "window $WID's composer already holds unsubmitted pasted text (chips ${_chips_before}; owned by kitty-send: ${_owned_chips:-none}) — nothing was sent (exit 9): it may be a human's draft, and pressing Enter blindly could submit it early. To clear it by hand: $(enter_cmd_text "$WID")" 9
   fi
 fi
 
@@ -754,7 +782,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     chip_now=$(printf '%s' "$screen" | grep -oE 'Pastedtext#[0-9]+' | sort -u | tr '\n' ' ' || true)
     saw_chip=1
     if [ "$ENTER_SENT" = 0 ]; then
-      kitty @ send-key --match "id:$WID" enter 2>/dev/null || true
+      press_enter "$WID"
       ENTER_SENT=1
     fi
     continue

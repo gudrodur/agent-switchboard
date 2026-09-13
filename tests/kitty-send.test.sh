@@ -465,7 +465,7 @@ sleep 1
 T19=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t19.XXXXXX")
 OUT=$(XDG_RUNTIME_DIR="$T19" "$SEND" --to "$W19" --text "$MSG" --timeout 6 2>&1); RC=$?
 check "unsubmitted chip before the send with no record sends nothing (exit 9)" 9 "nothing was sent" "$RC" "$OUT"
-check "the refusal prints the recovery command verbatim" 9 "kitty @ send-key --match id:$W19 enter" "$RC" "$OUT"
+check "the refusal prints the recovery command for that window" 9 "--match id:$W19" "$RC" "$OUT"
 if kitty @ get-text --match "id:$W19" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
   echo "  FAIL  message reached a dirty composer it should not have been sent to"; fail=$((fail+1))
 else
