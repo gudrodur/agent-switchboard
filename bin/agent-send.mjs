@@ -25,6 +25,13 @@
 // session's unacked rows (the inbox-read entry omp sessions call); --cancel
 // withdraws one queued row by id.
 //
+// A slash command cannot travel this way. A mailbox row reaches the
+// recipient as a user message, so "/collab" arrives as the literal text
+// "/collab" and runs nothing (measured 2026-09-12: two acked rows, two
+// literal replies). A slash command runs in the terminal client: send it
+// with kitty-send.sh into a window the sender may type into, and confirm it
+// on the target's screen, since it writes no session row to prove it by.
+//
 // Tests only: AGENT_SEND_KITTY_SEND replaces the kitty-send.sh path
 // (a stub records its argv), and the AGENT_MAILBOX_* seams of
 // lib/agent-mailbox.mjs apply.
