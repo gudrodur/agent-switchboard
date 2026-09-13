@@ -4,7 +4,7 @@
     "Adding a provider is one row under `providers`; a provider absent from the table is still probed, so an unknown one works before it is documented. Switching one off is `enabled: false`: an explicit --model on it is refused before any check, and the fallback walk skips it.",
     "`check` is how omp-tab.sh proves the provider can serve before opening a tab. `probe` runs a one-word `omp -p` request on the model itself, which costs a few tokens. `balance` reads a prepaid balance endpoint, which costs nothing, and reports the figure and the top-up link.",
     "`fallback` is the order tried when the model a launch resolves to cannot serve. omp itself never falls back across providers on a refused request, so this list is the only fallback that exists. The account default (modelRoles.default in the omp config file) is tried first whatever this list says; entries here are what comes after it.",
-    "`allowedModels` is the allowlist of models a tab may launch on. omp-tab.sh refuses before launch when the resolved model is not in it, and closes a tab whose session file shows it started on another model. A missing key means no allowlist (a note says so). The row below is an EXAMPLE, like the provider rows: set it to the model your own tabs must run."
+    "`allowedModels` is the allowlist of models a tab may launch on. The EXAMPLE list holds the default model, the two fallback entries and one heavier model, so the fallback walk can launch when the default cannot serve; a model the walk may land on must be in this list or the walk is refused. omp-tab.sh refuses before launch when the resolved model is not in the list, and closes a tab whose session file shows it started on another. A missing key means no allowlist (a note says so). Replace it with your own list."
   ],
   "providers": {
     "opencode-go": {
@@ -26,6 +26,9 @@
     "deepseek/deepseek-v4-flash"
   ],
   "allowedModels": [
-    "opencode-go/muse-spark-1.3-contributor"
+    "opencode-go/muse-spark-1.3-contributor",
+    "opencode-go/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro"
   ]
 }
