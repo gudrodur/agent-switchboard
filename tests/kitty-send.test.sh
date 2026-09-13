@@ -443,7 +443,7 @@ sleep 1
 T18=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t18.XXXXXX")
 mkdir -p "$T18/kitty-send-stranded"
 P18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] | select(.id == $id) | .pid')
-C18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] | select(.id == $id) | .created_at')
+C18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] | select(.id == $id) | .created_at // empty')
 printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$P18" "$C18" "$(date +%s)" "1 " > "$T18/kitty-send-stranded/stranded-$W18"
 OUT=$(XDG_RUNTIME_DIR="$T18" "$SEND" --to "$W18" --text "$MSG" --timeout 10 2>&1); RC=$?
 check "unsubmitted chip before the send with own record recovers and sends" 0 "delivered" "$RC" "$OUT"
@@ -483,7 +483,7 @@ sleep 1
 T20=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t20.XXXXXX")
 mkdir -p "$T20/kitty-send-stranded"
 P20=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W20" '.[].tabs[].windows[] | select(.id == $id) | .pid')
-C20=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W20" '.[].tabs[].windows[] | select(.id == $id) | .created_at')
+C20=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W20" '.[].tabs[].windows[] | select(.id == $id) | .created_at // empty')
 printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$P20" "$C20" "$(date +%s)" "20 " > "$T20/kitty-send-stranded/stranded-$W20"
 OUT=$(XDG_RUNTIME_DIR="$T20" "$SEND" --to "$W20" --text "$MSG" --timeout 6 2>&1); RC=$?
 check "owned chip beside an unowned one refuses instead of submitting it" 9 "chips 20 21" "$RC" "$OUT"
