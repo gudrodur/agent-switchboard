@@ -1,0 +1,27 @@
+{
+  "$comment": [
+    "EXAMPLE provider table for delegated omp runs. Read by bin/omp-tab.sh (preflight and fallback). Replace the rows below with your own providers before launching anything real.",
+    "Adding a provider is one row under `providers`; a provider absent from the table is still probed, so an unknown one works before it is documented. Switching one off is `enabled: false`: an explicit --model on it is refused before any check, and the fallback walk skips it.",
+    "`check` is how omp-tab.sh proves the provider can serve before opening a tab. `probe` runs a one-word `omp -p` request on the model itself, which costs a few tokens. `balance` reads a prepaid balance endpoint, which costs nothing, and reports the figure and the top-up link.",
+    "`fallback` is the order tried when the model a launch resolves to cannot serve. omp itself never falls back across providers on a refused request, so this list is the only fallback that exists. The account default (modelRoles.default in the omp config file) is tried first whatever this list says; entries here are what comes after it."
+  ],
+  "providers": {
+    "opencode-go": {
+      "enabled": true,
+      "check": "probe",
+      "why": "Example: subscription account with no key-based entitlement endpoint, so the only honest check is a real request."
+    },
+    "deepseek": {
+      "enabled": true,
+      "check": "balance",
+      "balanceUrl": "https://api.deepseek.com/user/balance",
+      "topUp": "https://platform.deepseek.com/top_up",
+      "why": "Example: prepaid direct account; an empty balance refuses every tab at once. The key comes from KEY_COMMAND (see bin/omp-tab.sh)."
+    }
+  },
+  "fallback": [
+    "opencode-go/muse-spark-1.3-contributor",
+    "opencode-go/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash"
+  ]
+}

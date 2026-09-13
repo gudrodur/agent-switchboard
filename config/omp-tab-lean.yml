@@ -1,0 +1,34 @@
+# Lean MCP overlay for delegated omp tabs. Applied per launch via
+# `omp --config` (see OMP_ARGS in omp-tab.sh); the live config.yml is never
+# touched. `--mcp full` skips this file and restores today's behaviour.
+#
+# Why: every omp startup spawns one process per discovered MCP server —
+# measured 2026-09-12 at 13 descendants holding ~310 MB PSS on a live tab
+# (plus omp itself), so ~five idle tabs pin ~1.5 GB. A delegated tab drives
+# from its brief file and coordinates over omp hooks (not MCP), so it needs
+# none of them.
+#
+# How, per omp v18.1.17 (docs/mcp-config.md in oh-my-pi):
+# - `disabledProviders` hides every capability from the named discovery
+#   sources — MCP servers included, regardless of which tool config
+#   (.claude.json, .cursor/mcp.json, …) introduced them. Name-based
+#   `disabledServers` would need updating every time a source adds one.
+#   Side effect, stated plainly: rules, skills, commands and settings from
+#   those same sources are off too. OMP-native config and extensions stay
+#   on, so a project `.omp/mcp.json` still applies under lean.
+# - `mcp.enableProjectConfig: false` excludes the project-root fallback
+#   files (`mcp.json` / `.mcp.json`), which no provider id covers.
+# Proof (headless, stdin closed, 2026-09-12): `omp -p --no-session --config
+# <this file>` spawns zero child processes for the whole run and answers;
+# without it the same run spawns ~9 MCP children and the tree peaks near
+# 700 MB PSS (omp itself included).
+mcp.enableProjectConfig: false
+disabledProviders:
+  - claude
+  - codex
+  - gemini
+  - opencode
+  - cursor
+  - windsurf
+  - marketplace
+  - vscode
