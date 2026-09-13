@@ -8,6 +8,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # The store parity test runs the lib under both runtimes against one
+      # file (bun writes, node reads, and the reverse) — bun must be present.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
       - name: node suites
         run: node --test tests/*.test.mjs
       - name: shell suite (headless kitty)

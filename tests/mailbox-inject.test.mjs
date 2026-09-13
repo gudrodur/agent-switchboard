@@ -28,10 +28,13 @@ let root, mboxDir, homeDir, switchDir;
 const payload = JSON.stringify({ cwd: CWD, session_id: SID });
 
 const runHook = (env = {}) => {
+  // Every spawned run gets temp store paths (never the live lock dir): the
+  // presence pin must name switchDir/presence.json, which presenceBeacons()
+  // below reads back.
   const res = spawnSync('node', [HOOK], {
     input: payload,
     encoding: 'utf-8',
-    env: { ...process.env, HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, ...env },
+    env: { ...process.env, HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, AGENT_SWITCHBOARD_PRESENCE_FILE: path.join(switchDir, 'presence.json'), ...env },
   });
   return res;
 };
@@ -103,7 +106,7 @@ test('a row under the pre-move key is delivered when the hook runs from the new 
   const res = spawnSync('node', [HOOK], {
     input: JSON.stringify({ cwd: '/repo/wt-a', session_id: SID }),
     encoding: 'utf-8',
-    env: { ...process.env, HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir },
+    env: { ...process.env, HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, AGENT_SWITCHBOARD_PRESENCE_FILE: path.join(switchDir, 'presence.json') },
   });
   assert.equal(res.status, 0);
   const parsed = JSON.parse(res.stdout);

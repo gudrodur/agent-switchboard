@@ -69,6 +69,7 @@ ln -s <checkout>/hooks/omp/pre/mailbox.ts ~/.omp/agent/hooks/pre/switchboard-mai
 ```
 
 The hook drains unacked rows at turn start and at tool-execution end, acks each first with `steer` (`now`, `stop`) or `followUp` (`idle`, `queue`), and watches the mailbox directory while parked so it can wake an idle session. It releases presence at shutdown so later sends fall back to the terminal instead of a ghost consumer.
+In store mode the directory watch has no key files to see, so the idle path is the 5 s poll, which still drains and acks within ~5 s.
 
 omp runs hooks on Bun. Bun 1.3.14 loads the symlinked hook, including its `.ts` import, with no build step (checked 2026-09-13), and node >= 24 loads the same file in `npm test`. A runtime that preserved symlinks instead of resolving them would break the relative imports; then point the hook list at `<checkout>/hooks/omp/pre/mailbox.ts` directly.
 
@@ -105,7 +106,8 @@ Every variable, its default, and what reads it — taken from the code, not from
 |---|---|---|
 | `AGENT_SWITCHBOARD_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-switchboard` | `lib/presence.mjs`: root for presence and mailbox |
 | `AGENT_SWITCHBOARD_PRESENCE_FILE` | `$AGENT_SWITCHBOARD_DIR/presence.json` | `lib/presence.mjs`: the live-beacon file |
-| `AGENT_SWITCHBOARD_MAILBOX_DIR` | `$AGENT_SWITCHBOARD_DIR/mailbox` | `lib/agent-mailbox.mjs`: one JSONL file per recipient (`AGENT_MAILBOX_DIR` still honoured as the older name) |
+| `AGENT_SWITCHBOARD_DB` | `$AGENT_SWITCHBOARD_DIR/state.db` | `lib/store.mjs`: the SQLite store (WAL mode) holding the mailbox and presence when no legacy file override below is set |
+| `AGENT_SWITCHBOARD_MAILBOX_DIR` | `$AGENT_SWITCHBOARD_DIR/mailbox` | `lib/agent-mailbox.mjs`: legacy JSONL mailbox, one file per recipient (`AGENT_MAILBOX_DIR` still honoured as the older name); used while set or while a `{dir}` override is passed |
 | `AGENT_SWITCHBOARD_SENDER` | `another agent session` | `bin/agent-send.mjs`, `bin/kitty-send.sh`: the sender label on terminal-delivered notes |
 | `AGENT_SWITCHBOARD_SEND` | `bin/kitty-send.sh` beside `agent-send.mjs` | `bin/agent-send.mjs`: the fallback sender (`AGENT_SEND_KITTY_SEND` wins when set) |
 | `OMP_TAB_KEY_COMMAND` / `KEY_COMMAND` | unset (no key step; the tab runs `exec omp` directly) | `bin/omp-tab.sh`: when set, the tab evals its output before exec, and balance checks use it |
@@ -122,6 +124,14 @@ Every variable, its default, and what reads it — taken from the code, not from
 Two warnings, both load-bearing. `config/omp-providers.json` holds EXAMPLE providers with real public endpoints: a launch with that table unchanged bills those example accounts, so replace its rows with your own before launching anything real. `bin/omp-tab-state.sh` reads omp's own `$HOME/.omp/agent/terminal-sessions` and `sessions` whatever `AGENT_SWITCHBOARD_DIR` says — only the mailbox and presence live under the switchboard directory, because only this repo writes them.
 
 Timers, for orientation: presence beacons go stale after 20 minutes (`PRESENCE_STALE_MS`, imported by the mailbox prune, never restated); the sender waits 20 s for an ack by default (`--deadline N`, unbounded for `--queue`); the parked-tab fallback poll ticks every 5 s (`IDLE_POLL_MS`); the queued terminal waiter heartbeats every 5 min and never times out unless `--deadline` caps it.
+
+## Store (SQLite) and retention
+
+The mailbox and presence beacons live in one SQLite file (`AGENT_SWITCHBOARD_DB`, default `$AGENT_SWITCHBOARD_DIR/state.db`, WAL mode, 5 s busy timeout). `lib/store.mjs` picks `node:sqlite` under node and `bun:sqlite` under Bun at runtime, so the Node scripts and omp's Bun hooks read and write the same file; `bin/switchboard-export.mjs <mailbox|presence|meta>` dumps any table as JSON for hand inspection.
+
+Backend choice, in order: an explicit `{dir}` / `{file}` override means JSON files (the hermetic path the tests exercise); else an explicit `AGENT_SWITCHBOARD_DB` wins and the store backs everything; else the legacy `AGENT_SWITCHBOARD_MAILBOX_DIR` / `AGENT_MAILBOX_DIR` / `AGENT_SWITCHBOARD_PRESENCE_FILE` pins keep the JSONL backend while set. The store's first open imports the legacy files once (recorded in the `meta` table, so a second open imports nothing) and leaves them in place.
+
+Retention, enforced by `pruneStale`: acked or cancelled rows are deleted 14 days after their ack/withdraw marker, markers included. Unacked rows are never deleted by retention — a closed session's rows survive it, so a probe's evidence outlives its session.
 
 ## Limits, plainly
 
