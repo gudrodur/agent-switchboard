@@ -24,9 +24,9 @@ A file-backed mailbox with acks between agents on two runtimes on one machine. W
 | Terminal if no ack | Terminal remote control: types the message into the window. Delivery is proven by a new inbound row in that tab's session file. | `bin/kitty-send.sh` |
 | Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. | `bin/omp-tab.sh` |
 | Read state | Not the screen but the disk: the window's process, its terminal, and the runtime's terminal-sessions file whose last row is the state. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
-| Files | Plain files in the round directory: plan, briefs, steers, reports, logs. | the round directory in project memory |
+| Files | Plain files every agent can read: plan, briefs, steers, reports, logs. | a directory the agents share |
 | Shared record | The `gh` command line: issues, pull requests, checks, merges. | `gh` |
-| Approval path | Runtime A's own hold screen for a message between agents in different permission modes. | `settings.json` |
+| Approval path | Runtime A's own hold screen for a message between agents in different permission modes. | Runtime A's settings file |
 
 ## Install
 
@@ -61,17 +61,16 @@ The hook reads this session's unacked rows by session id, acks each with `prompt
 
 ### Runtime B (omp): the consumer hook
 
-omp loads hooks from its hooks directory. Symlink the repo's two hook files into it so the relative imports (`../lib/window-id.ts`, `../../../lib/agent-mailbox.mjs`) keep resolving to the checkout:
+omp loads hooks from its hooks directory. Symlink the one hook file into it. Its relative imports (`../lib/window-id.ts`, `../../../lib/agent-mailbox.mjs`) resolve from the file's real path, so they keep pointing into the checkout:
 
 ```sh
-mkdir -p ~/.omp/agent/hooks/pre ~/.omp/agent/hooks/lib
+mkdir -p ~/.omp/agent/hooks/pre
 ln -s <checkout>/hooks/omp/pre/mailbox.ts ~/.omp/agent/hooks/pre/switchboard-mailbox.ts
-ln -s <checkout>/hooks/omp/lib/window-id.ts ~/.omp/agent/hooks/lib/switchboard-window-id.ts
 ```
 
 The hook drains unacked rows at turn start and at tool-execution end, acks each first with `steer` (`now`, `stop`) or `followUp` (`idle`, `queue`), and watches the mailbox directory while parked so it can wake an idle session. It releases presence at shutdown so later sends fall back to the terminal instead of a ghost consumer.
 
-One runtime caveat: node >= 24 loads the `.ts` hook directly (that is what `npm test` runs under), but whether the omp runtime accepts the `.ts` import specifier is unverified — if it insists on a compiled extension, add a build step emitting `window-id.js` next to the source instead of renaming the import.
+omp runs hooks on Bun. Bun 1.3.14 loads the symlinked hook, including its `.ts` import, with no build step (checked 2026-09-13), and node >= 24 loads the same file in `npm test`. A runtime that preserved symlinks instead of resolving them would break the relative imports; then point the hook list at `<checkout>/hooks/omp/pre/mailbox.ts` directly.
 
 ### Sending and launching
 
