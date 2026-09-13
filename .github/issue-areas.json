@@ -1,0 +1,23 @@
+{
+  "$comment": "Issue-title vocabulary for this repo: every issue title reads `area: description`, with the area taken from this list. Adding an area is a pull request against this file, so the list stays a vocabulary. nearMisses maps a likely wrong word to the area it means.",
+  "areas": [
+    "mailbox",
+    "fallback",
+    "launcher",
+    "hooks",
+    "docs",
+    "ci",
+    "meta"
+  ],
+  "nearMisses": {
+    "agent-send": "mailbox",
+    "kitty": "fallback",
+    "kitty-send": "fallback",
+    "tab": "launcher",
+    "omp-tab": "launcher",
+    "hook": "hooks",
+    "readme": "docs",
+    "workflow": "ci",
+    "tests": "ci"
+  }
+}
