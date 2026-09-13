@@ -11,9 +11,16 @@
 
 const ISOLATED_PREFIXES = ['AGENT_SWITCHBOARD_', 'AGENT_MAILBOX_'];
 
-export const isIsolatedKey = (key) => ISOLATED_PREFIXES.some((p) => key.startsWith(p));
+// The session and window identity the omp hook reads: sessionIdOf() takes
+// OMP_SESSION_ID before anything else, and presence records KITTY_WINDOW_ID.
+// A suite run inside an omp tab inherits both, so a session-less test would
+// silently become a with-id test there. A test that needs either sets it
+// itself, after this scrub (an explicit isolatedEnv() extra wins).
+const ISOLATED_KEYS = new Set(['OMP_SESSION_ID', 'KITTY_WINDOW_ID']);
 
-// Copy of env without the switchboard/mailbox pins.
+export const isIsolatedKey = (key) => ISOLATED_KEYS.has(key) || ISOLATED_PREFIXES.some((p) => key.startsWith(p));
+
+// Copy of env without the switchboard/mailbox pins and the identity keys.
 export const stripIsolatedVars = (env = process.env) => {
   const out = { ...env };
   for (const key of Object.keys(out)) {
