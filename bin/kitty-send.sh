@@ -36,6 +36,23 @@
 #      the message is pending in its steering queue — no role:user row can
 #      reach the session file until the tool boundary. Truthful, not proven;
 #      like exit 3 it must never invite a resend
+#   9  the target's composer already holds an unsubmitted paste chip that is
+#      NOT kitty-send's own leftover — NOTHING WAS SENT (it may be a human's
+#      draft; the message prints the recovery command)
+#
+# A composer echo is NOT delivery. Claude Code's
+# composer collapses a send-text burst into a `[Pasted text #N +M lines]` chip
+# and swallows the trailing \r inside it, so the text sits in the text box
+# and the agent never sees it — while the fragment match would call it
+# "echoed at the prompt". So in the no-session-file branch only (an omp tab
+# proves by session row and never takes this path): a `[Pastedtext#` chip on
+# the squashed screen after the send means NOT DELIVERED whatever the fragment
+# match says — one Enter is pressed, at most once per send, and only a chip
+# gone AND the fragment echoed confirms. A chip on screen BEFORE the send
+# means the composer is dirty: with kitty-send's own stranded record for this
+# window (chip numbers plus pid and created_at, beside the queue dir) it is
+# recovered with Enter and then sent; without one it is exit 9, since
+# pressing Enter blindly could submit a human's half-pasted draft.
 #
 # Four things make a hand-rolled `kitty @ send-text` unreliable, all measured:
 #
@@ -230,6 +247,51 @@ win_title() {
     | jq -r --argjson id "$1" '.[].tabs[].windows[] | select(.id == $id) | .title // ""' 2>/dev/null \
     | head -1
 }
+win_created() {
+  kitty @ ls 2>/dev/null \
+    | jq -r --argjson id "$1" '.[].tabs[].windows[] | select(.id == $id) | .created_at // empty' 2>/dev/null \
+    | head -1
+}
+
+# The one Enter the chip branches press. kitty before 0.33.0 ignored --match on
+# `kitty @ send-key` (kitty changelog 0.33.0, iss 7192): measured 2026-09-13 on
+# a CI runner with kitty 0.32.2, the Enter never reached the target window. So
+# an older or unknown kitty gets a lone carriage return through send-text,
+# which has always honoured --match; 0.33.0 and later keep send-key, the path
+# proven live against a real composer.
+kitty_at_least_033() {
+  local v maj min
+  v=$(kitty --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  [ -n "$v" ] || return 1
+  maj=${v%%.*}; min=${v#*.}
+  [ "$maj" -gt 0 ] || [ "$min" -ge 33 ]
+}
+press_enter() { # $1 = window id
+  if kitty_at_least_033; then
+    kitty @ send-key --match "id:$1" enter 2>/dev/null || true
+  else
+    kitty @ send-text --match "id:$1" $'\r' 2>/dev/null || true
+  fi
+}
+enter_cmd_text() { # $1 = window id; the same Enter as a command a human can paste
+  if kitty_at_least_033; then
+    printf '%s' "kitty @ send-key --match id:$1 enter"
+  else
+    printf '%s' "kitty @ send-text --match id:$1 \$'\\r'"
+  fi
+}
+
+# Stranded-chip ownership. When
+# kitty-send leaves a chip it could not clear, it records, beside QUEUE_DIR:
+# the window id (the filename), the chip NUMBER(S) it left, the window's pid
+# and kitty created_at (Claude Code restarts chip numbering with a new
+# session, so a bare number can become false), and the time. `[Pastedtext#` is
+# not an identity; the number is. Ownership is a SUBSET test: every chip on
+# screen must be in this window's record, with pid and created_at matching.
+stranded_file() { printf '%s/kitty-send-stranded/stranded-%s' "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}" "$1"; }
+screen_chips() { # $1 = window id; sorted unique chip numbers on screen
+  kitty @ get-text --match "id:$1" --extent all 2>/dev/null | grep -oE 'Pasted text #[0-9]+' | grep -oE '[0-9]+' | sort -nu
+}
 
 # Busy = a braille spinner glyph in the window title (see the header). grep -P
 # with a UTF-8 locale is what makes the range match a character, not bytes.
@@ -291,7 +353,10 @@ dialog_or_die() {
   esac
 }
 
-TO=""; TEXT=""; FILE=""; EXPECT=""; EXPECT_GIVEN=0; TIMEOUT=20; WAIT_IDLE=0; DEADLINE=""; QUIET=0; QUEUE=0; CANCEL=0; NOW=0; IDLE_WHEN=""
+TO=""; TEXT=""; FILE=""; EXPECT=""; EXPECT_GIVEN=0; TIMEOUT="${KITTY_SEND_TIMEOUT:-20}"; WAIT_IDLE=0; DEADLINE=""; QUIET=0; QUEUE=0; CANCEL=0; NOW=0; IDLE_WHEN=""
+# KITTY_SEND_TIMEOUT overrides the --timeout default (test seam only, so the
+# omp-tab suite can bound the session-row wait without passing a flag through
+# omp-tab.sh; production never sets it).
 
 # Queued sends live under the per-user runtime dir: one pid file and one log
 # per target window, so --cancel can name exactly the waiter it kills.
@@ -632,12 +697,61 @@ if [ "$STATE_KNOWN" = 0 ]; then
 else
   before_screen=""
 fi
+if [ "$STATE_KNOWN" = 0 ] && printf '%s' "$before_screen" | grep -qF -- '[Pastedtext#'; then
+# A chip on screen BEFORE the send means the composer is dirty: send-text
+# would concatenate onto whatever is already in it. Only in the no-session-file branch — an omp tab proves by session
+# row and never takes this path. With kitty-send's own stranded record for
+# this window the leftover is recovered (Enter, wait for clear, drop the
+# record, then send); without one it may be a human's draft, so nothing is
+# sent and the exit is 9 with the recovery command printed verbatim.
+  _chips_before=$(printf '%s' "$before_screen" | grep -oE 'Pastedtext#[0-9]+' | grep -oE '[0-9]+' | sort -nu | tr '\n' ' ' || true)
+  _rec=$(stranded_file "$WID")
+  _owned_chips=""; _rec_pid=""; _rec_created=""
+  if [ -f "$_rec" ]; then
+    _rec_pid=$(grep -E '^pid=' "$_rec" 2>/dev/null | cut -d= -f2)
+    _rec_created=$(grep -E '^created=' "$_rec" 2>/dev/null | cut -d= -f2)
+    _owned_chips=$(grep -E '^chips=' "$_rec" 2>/dev/null | cut -d= -f2-)
+  fi
+  _cur_pid=$(win_pid "$WID"); _cur_created=$(win_created "$WID")
+  _owned=1
+  if [ -z "$_rec_pid" ] || [ "$_rec_pid" != "$_cur_pid" ] || [ "$_rec_created" != "$_cur_created" ]; then
+    _owned=0
+  else
+    for _c in $_chips_before; do
+      case " $_owned_chips " in *" $_c "*) ;; *) _owned=0 ;; esac
+    done
+  fi
+  if [ "$_owned" = 1 ]; then
+    note "window $WID's composer already holds unsubmitted pasted text (chips ${_chips_before}) left by an earlier kitty-send — pressing Enter once to recover it"
+    press_enter "$WID"
+    _rec_deadline=$(( $(date +%s) + TIMEOUT ))
+    _cleared=0
+    while [ "$(date +%s)" -lt "$_rec_deadline" ]; do
+      sleep 1
+      if [ -z "$(win_pid "$WID")" ]; then break; fi
+      _s=$(kitty @ get-text --match "id:$WID" --extent all 2>/dev/null | tr -d '[:space:]' || true)
+      if ! printf '%s' "$_s" | grep -qF -- '[Pastedtext#'; then _cleared=1; before_screen="$_s"; break; fi
+    done
+    if [ "$_cleared" = 1 ]; then
+      rm -f "$_rec"
+      note "a stranded earlier message was recovered in window $WID: the composer is clear, sending now"
+    else
+      die "window $WID's composer still holds unsubmitted pasted text (chips ${_chips_before}) after Enter — nothing was sent. Do NOT send it again blind: a second send is what enqueues an empty steering message and wedges an agent. Look at the window first." 3
+    fi
+  else
+    die "window $WID's composer already holds unsubmitted pasted text (chips ${_chips_before}; owned by kitty-send: ${_owned_chips:-none}) — nothing was sent (exit 9): it may be a human's draft, and pressing Enter blindly could submit it early. To clear it by hand: $(enter_cmd_text "$WID")" 9
+  fi
+fi
 
 # THE send. Text and carriage return in ONE call — see the header. Never split.
 kitty @ send-text --match "id:$WID" "$TEXT"$'\r' 2>/dev/null || true
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 confirmed=0
+# Unsubmitted-paste-chip tracking: ENTER_SENT bounds the extra
+# Enter to one per send; saw_chip remembers a chip was seen so the failure
+# below records it instead of reporting a bare timeout.
+ENTER_SENT=0; saw_chip=0; chip_now=""
 while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 1
   if [ -z "$(win_pid "$WID")" ]; then
@@ -660,6 +774,19 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   # the false green already ran above and still fails closed.
   if [ "$STATE_KNOWN" = 0 ]; then
   screen=$(kitty @ get-text --match "id:$WID" --extent all 2>/dev/null | tr -d '[:space:]')
+  if printf '%s' "$screen" | grep -qF -- '[Pastedtext#'; then
+  # An unsubmitted paste chip after the send means NOT DELIVERED, whatever
+  # the fragment match below says: the trailing \r was swallowed into the
+  # chip instead of submitting it. One Enter is pressed, at
+  # most once per send, and only a chip gone AND the fragment echoed confirms.
+    chip_now=$(printf '%s' "$screen" | grep -oE 'Pastedtext#[0-9]+' | sort -u | tr '\n' ' ' || true)
+    saw_chip=1
+    if [ "$ENTER_SENT" = 0 ]; then
+      press_enter "$WID"
+      ENTER_SENT=1
+    fi
+    continue
+  fi
   # A match only confirms when the fragment was NOT on screen before the send:
   # presence can be a leftover, a new appearance cannot (see the comment above
   # the snapshot). A duplicate of a still-displayed message stays unconfirmed,
@@ -702,6 +829,21 @@ done
 if [ "$confirmed" = 1 ]; then
   note "delivered to window $WID — ${where:-observed on screen}"
   exit 0
+fi
+# A chip survived the send (and the one Enter): the message reached the text
+# box but was never submitted, so this is exit 3 with the chip named — not a
+# bare timeout, and never an invitation to resend. The stranding is recorded
+# (window id, chip numbers, pid, created_at, time) so the NEXT send can tell
+# kitty-send's own leftover from a human's draft.
+if [ "$saw_chip" = 1 ]; then
+  _final_chips=$(screen_chips "$WID" | tr '\n' ' ' || true)
+  [ -n "$_final_chips" ] || _final_chips="$chip_now"
+  mkdir -p "$(dirname "$(stranded_file "$WID")")"
+  printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$(win_pid "$WID")" "$(win_created "$WID")" "$(date +%s)" "$_final_chips" > "$(stranded_file "$WID")"
+  note "sent to window $WID but its composer still holds unsubmitted pasted text (chips ${_final_chips}) — the message reached the text box and was never submitted (this stranding is recorded for the next send)."
+  note "Do NOT send it again blind: a second send is what enqueues an empty steering"
+  note "message and wedges an agent. Look at the window first."
+  exit 3
 fi
 
 # Mid-turn at the send and still mid-turn now: the message

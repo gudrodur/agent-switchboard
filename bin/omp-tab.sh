@@ -360,7 +360,7 @@ PROVIDERS_JSON="${OMP_TAB_PROVIDERS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pw
 # with rc 124. Production always uses the 60 s default.
 PROBE_TIMEOUT="${OMP_TAB_PROBE_TIMEOUT:-60}"
 [ -r "$PROVIDERS_JSON" ] || die "provider table not readable: $PROVIDERS_JSON"
-# tbl fallback | tbl enabled <provider> | tbl field <provider> <key>
+# tbl fallback | tbl enabled <provider> | tbl field <provider> <key> | tbl allowed | tbl has_allowed
 tbl() {
   python3 - "$PROVIDERS_JSON" "$@" <<'PY'
 import json, sys
@@ -372,6 +372,10 @@ elif op == "enabled":
     print("yes" if p.get(a[0], {}).get("enabled", True) else "no")
 elif op == "field":
     print(p.get(a[0], {}).get(a[1], ""))
+elif op == "allowed":
+    print("\n".join(t.get("allowedModels", [])))
+elif op == "has_allowed":
+    print("yes" if "allowedModels" in t else "no")
 PY
 }
 
@@ -509,6 +513,26 @@ EFFECTIVE="$DEFAULT_MODEL"   # non-empty: the refusal above guarantees it
   else
     fallback_walk "$EFFECTIVE" "$PF_REASON"
   fi
+fi
+# The allowlist tabs under an agent run
+# the allowlisted model only, and modelRoles.default is a
+# value a human edits, so the check runs on EFFECTIVE — whatever the launch
+# resolved to, whether from --model, the default, or the fallback walk — and
+# BEFORE anything is launched. A missing allowedModels key means no allowlist
+# (old behaviour), said once so the absence is visible rather than silent.
+if [ "$(tbl has_allowed)" = yes ]; then
+  ALLOWED_HIT=0
+  while IFS= read -r _allow; do
+    [ -n "$_allow" ] || continue
+    [ "$_allow" = "$EFFECTIVE" ] && ALLOWED_HIT=1
+  done < <(tbl allowed)
+  if [ "$ALLOWED_HIT" != 1 ]; then
+    die "model $EFFECTIVE is not in allowedModels in $PROVIDERS_JSON — nothing launched.
+        Tabs under an agent run the allowlisted model only. Set modelRoles.default
+        in $OMP_CFG to an allowlisted model, or pass --model with one."
+  fi
+else
+  note "no allowedModels key in $PROVIDERS_JSON: no allowlist, any model may launch (old behaviour)"
 fi
 
 kitty_up || die "kitty remote control unavailable.
@@ -658,9 +682,55 @@ done
 # no `model:` line at all (measured 2026-09-08).
 mdl=$(kitty @ get-text --match "id:$WID" 2>/dev/null | grep -oiE 'DeepSeek V4 [A-Za-z-]+( Vision[A-Za-z-]*)?|Muse Spark [A-Za-z0-9. -]*' | tail -1)
 mdl="${mdl% }"   # the bar pads the name; a trailing space made "Contributor  —"
+
+# Prove the launch model from the tab's session file.
+# modelRoles.default is shared by every omp session and a /model action can
+# rewrite it, so a launch that trusts it can land anywhere: a tab launched "as
+# anthropic/claude-opus-5" ran 5 assistant turns on Opus before a hand
+# switch (2026-09-13). The status bar sometimes names no model at all, and model_usage rows
+# lie (the first one said muse-spark under those 5 Opus rows), so neither is
+# proof. The FIRST model_change row is what the tab actually started on.
+# Resolved through omp-tab-state.sh (session= in its output); nothing here
+# resolves a window to a session file a second way.
+close_proven_window() {
+  kitty @ close-window --match "id:$WID" 2>/dev/null || true
+  sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
+}
+TAB_SESSION=""; TAB_MODEL=""
+for _ in $(seq 1 5); do
+  _stout=$("$STATE_TAB" "$WID" 2>/dev/null || true)
+  TAB_SESSION=$(printf '%s' "$_stout" | grep -o 'session=.*' | head -1 | sed 's/^session=//; s/ reason=.*$//')
+  case "$TAB_SESSION" in ""|"none") TAB_SESSION="" ;;
+    *) TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null) ;;
+  esac
+  [ -n "$TAB_MODEL" ] && break
+  sleep 2
+done
+if [ -z "$TAB_MODEL" ]; then
+  printf 'WINDOW_ID=%s\n' "$WID"
+  close_proven_window
+  die "could not prove the launch model: no session file or no model_change row for window $WID within ~10 s ($STATE_TAB says session=${TAB_SESSION:-none}). The window was closed and nothing was sent: \"could not check\" is not a pass." 3
+fi
+if [ "$TAB_MODEL" != "$EFFECTIVE" ]; then
+  printf 'WINDOW_ID=%s\n' "$WID"
+  close_proven_window
+  die "tab is running model $TAB_MODEL (first model_change row in $TAB_SESSION) but was launched as $EFFECTIVE. The window was closed and nothing was sent." 3
+fi
+if [ "$(tbl has_allowed)" = yes ]; then
+  _hit=0
+  while IFS= read -r _allow; do
+    [ -n "$_allow" ] || continue
+    [ "$_allow" = "$TAB_MODEL" ] && _hit=1
+  done < <(tbl allowed)
+  if [ "$_hit" != 1 ]; then
+    printf 'WINDOW_ID=%s\n' "$WID"
+    close_proven_window
+    die "tab is running model $TAB_MODEL, outside allowedModels in $PROVIDERS_JSON. The window was closed and nothing was sent." 3
+  fi
+fi
 # provider/model, not the pretty name alone: the bar cannot tell
 # opencode-go/deepseek-v4-flash from deepseek/deepseek-v4-flash.
-note "model: ${mdl:-<status bar names no model>} — launched as $EFFECTIVE"
+note "model: $TAB_MODEL (proven from the tab's session file) — launched as $EFFECTIVE"
 
 # A --model that did not take is the failure this flag exists to prevent, so it is
 # an exit and not a note. Compare loosely: the status bar prettifies the id

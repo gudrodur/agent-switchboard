@@ -38,7 +38,7 @@
 # spinner clears, and send nothing when it never does. Shown to fail against
 # the pre-change script: cases 7 and 8 and the first half of 9.
 #
-# Cases 13-14 pin the DEFAULT for a mid-turn target, added after #401: a plain
+# Cases 13-14 pin the DEFAULT for a mid-turn target, added after a measured failure: a plain
 # send into a spinner-titled window used to go through with a stderr note that
 # the in-flight tool result would be discarded, and the senders never passed
 # --wait-idle because nothing made them. Now it is exit 7 with nothing sent,
@@ -46,7 +46,7 @@
 # pre-change script: case 13 (it sent, exit 0) and the first half of 14
 # (--now was an unknown option).
 #
-# Case 15 pins the proof order since #491: a window WITH a linked session
+# Case 15 pins the proof order: a window WITH a linked session
 # file is proven by a new role:user row, never the echo. The fixture links
 # its own pty to a fabricated session file through OMP_TAB_STATE_DIR, so no
 # agent is involved.
@@ -395,6 +395,104 @@ OUT=$(OMP_TAB_STATE_DIR="$STATEDIR15" "$SEND" --to "$W15" --text "$MSG" --timeou
 wait
 check "linked session file proves the send by state" 0 "proved by session row" "$RC" "$OUT"
 rm -rf "$STATEDIR15"
+# 16. UNSUBMITTED CHIP AFTER THE SEND — the composer false green. The
+#     fixture behaves like Claude Code's composer: the send-text burst lands
+#     as a `[Pasted text #1 +1 lines]` chip (the \r swallowed inside it) and
+#     only an Enter keypress submits it. Before the fix this confirmed as
+#     "echoed at the prompt"; now one Enter goes out and the send confirms
+#     only once the chip is gone AND the fragment is echoed.
+W16=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" \
+  sh -c 'read -r L; printf "%s\n" "[Pasted text #1 +1 lines]"; read -r _; printf "\033[3J\033c"; printf "%s\n" "$L"; exec cat' 2>/dev/null)
+WINDOWS+=("$W16")
+sleep 1
+OUT=$("$SEND" --to "$W16" --text "$MSG" --timeout 10 2>&1); RC=$?
+check "unsubmitted chip after the send clears on Enter and confirms" 0 "delivered" "$RC" "$OUT"
+if kitty @ get-text --match "id:$W16" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "[Pastedtext#"; then
+  echo "  FAIL  unsubmitted chip still on screen after a confirmed send"; fail=$((fail+1))
+else
+  echo "  PASS  unsubmitted chip gone after a confirmed send"; pass=$((pass+1))
+fi
+
+# 17. UNSUBMITTED CHIP THAT NEVER CLEARS — the Enter goes out once and the
+#     chip stays, so this is exit 3 naming the chip and the window (never an
+#     invitation to resend), and the stranding is recorded for the next send.
+W17=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" \
+  sh -c 'read -r L; printf "%s\n" "[Pasted text #1 +1 lines]"; exec cat' 2>/dev/null)
+WINDOWS+=("$W17")
+sleep 1
+T17=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t17.XXXXXX")
+OUT=$(XDG_RUNTIME_DIR="$T17" "$SEND" --to "$W17" --text "$MSG" --timeout 6 2>&1); RC=$?
+check "unsubmitted chip that never clears exits 3 and names the chip" 3 "chips 1" "$RC" "$OUT"
+check "the unsubmitted chip verdict names the window" 3 "window $W17" "$RC" "$OUT"
+check "the unsubmitted chip verdict says not to resend" 3 "Do NOT send it again blind" "$RC" "$OUT"
+if [ -f "$T17/kitty-send-stranded/stranded-$W17" ] && grep -q "chips=1" "$T17/kitty-send-stranded/stranded-$W17"; then
+  echo "  PASS  unsubmitted chip stranding recorded for the next send"; pass=$((pass+1))
+else
+  echo "  FAIL  unsubmitted chip stranding not recorded"; fail=$((fail+1))
+fi
+rm -rf "$T17"
+
+# 18. UNSUBMITTED CHIP BEFORE THE SEND WITH kitty-send's OWN RECORD — the
+#     composer is dirty with the leftover case 17 strands. pid, created_at
+#     and every chip number match the record, so Enter recovers it, the
+#     record is dropped, the new message sends and confirms.
+W18=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" \
+  sh -c 'printf "%s\n" "[Pasted text #1 +1 lines]"; read -r _; printf "\033[3J\033c"; read -r L; printf "%s\n" "$L"; exec cat' 2>/dev/null)
+WINDOWS+=("$W18")
+sleep 1
+T18=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t18.XXXXXX")
+mkdir -p "$T18/kitty-send-stranded"
+P18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] | select(.id == $id) | .pid')
+C18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] | select(.id == $id) | .created_at // empty')
+printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$P18" "$C18" "$(date +%s)" "1 " > "$T18/kitty-send-stranded/stranded-$W18"
+OUT=$(XDG_RUNTIME_DIR="$T18" "$SEND" --to "$W18" --text "$MSG" --timeout 10 2>&1); RC=$?
+check "unsubmitted chip before the send with own record recovers and sends" 0 "delivered" "$RC" "$OUT"
+check "the recovery says a stranded earlier message was recovered" 0 "a stranded earlier message was recovered" "$RC" "$OUT"
+if [ ! -f "$T18/kitty-send-stranded/stranded-$W18" ]; then
+  echo "  PASS  unsubmitted chip record dropped after recovery"; pass=$((pass+1))
+else
+  echo "  FAIL  unsubmitted chip record left behind after recovery"; fail=$((fail+1))
+fi
+rm -rf "$T18"
+
+# 19. UNSUBMITTED CHIP BEFORE THE SEND WITH NO RECORD — it may be a human's
+#     draft, so nothing is sent (exit 9, the distinct code) and the message
+#     prints the recovery command verbatim, leaving the caller a way out.
+W19=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" \
+  sh -c 'printf "%s\n" "[Pasted text #1 +1 lines]"; exec cat' 2>/dev/null)
+WINDOWS+=("$W19")
+sleep 1
+T19=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t19.XXXXXX")
+OUT=$(XDG_RUNTIME_DIR="$T19" "$SEND" --to "$W19" --text "$MSG" --timeout 6 2>&1); RC=$?
+check "unsubmitted chip before the send with no record sends nothing (exit 9)" 9 "nothing was sent" "$RC" "$OUT"
+check "the refusal prints the recovery command for that window" 9 "--match id:$W19" "$RC" "$OUT"
+if kitty @ get-text --match "id:$W19" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
+  echo "  FAIL  message reached a dirty composer it should not have been sent to"; fail=$((fail+1))
+else
+  echo "  PASS  nothing reached the dirty composer"; pass=$((pass+1))
+fi
+rm -rf "$T19"
+
+# 20. OWNED #20 BESIDE UNOWNED #21 — ownership is a SUBSET test (fourth #638
+#     comment): one chip kitty-send stranded next to a human's newer draft
+#     must refuse (exit 9), not press Enter and submit the draft early.
+W20=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" \
+  sh -c 'printf "%s\n%s\n" "[Pasted text #20 +1 lines]" "[Pasted text #21 +1 lines]"; exec cat' 2>/dev/null)
+WINDOWS+=("$W20")
+sleep 1
+T20=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-t20.XXXXXX")
+mkdir -p "$T20/kitty-send-stranded"
+P20=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W20" '.[].tabs[].windows[] | select(.id == $id) | .pid')
+C20=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W20" '.[].tabs[].windows[] | select(.id == $id) | .created_at // empty')
+printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$P20" "$C20" "$(date +%s)" "20 " > "$T20/kitty-send-stranded/stranded-$W20"
+OUT=$(XDG_RUNTIME_DIR="$T20" "$SEND" --to "$W20" --text "$MSG" --timeout 6 2>&1); RC=$?
+check "owned chip beside an unowned one refuses instead of submitting it" 9 "chips 20 21" "$RC" "$OUT"
+if [ -f "$T20/kitty-send-stranded/stranded-$W20" ]; then
+  echo "  PASS  mixed-ownership record kept, no recovery attempted"; pass=$((pass+1))
+else
+  echo "  FAIL  mixed-ownership record dropped"; fail=$((fail+1))
+fi
+rm -rf "$T20"
 
 echo
 echo "$pass passed, $fail failed"

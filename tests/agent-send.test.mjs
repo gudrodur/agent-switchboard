@@ -78,7 +78,7 @@ before(async () => {
     'exit 5',
     '',
   ].join('\n'), { mode: 0o755 });
-  // kitty-send.sh's own argument rules, not a stub's idea of them (#588: the
+  // kitty-send.sh's own argument rules, not a stub's idea of them (the
   // accept-anything stub above let `--now --deadline` through, which the real
   // script refuses). This wrapper runs the real script against a kitty that
   // always fails: kitty_up runs after every flag check, so "remote control
@@ -327,6 +327,22 @@ test('a fallback that sends nothing puts the message back in the mailbox ', asyn
   assert.equal(left[0].text, 'bare steer');
 });
 
+// Exit 9 (a dirty composer holding a chip kitty-send does not own) also sends
+// nothing, so the withdrawn row must go back too, or the message is lost.
+test('a fallback refused at a dirty composer (exit 9) puts the message back in the mailbox', async () => {
+  fs.rmSync(fallbackArgv, { force: true });
+  fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
+  const { code, stderr } = await runSend(
+    ['--to', '991001', '--text', 'dirty composer steer', '--deadline', '1'],
+    childEnv({ CLAUDE_CODE_SESSION_ID: 's2', AGENT_SEND_KITTY_SEND: realRulesStub, KITTY_SEND_STUB_EXIT: '9' }),
+  );
+  assert.equal(code, 3);
+  assert.match(stderr, /kitty-send exit 9 sent nothing for \S+; re-queued as \S+/);
+  const left = readUnacked(KEY_S1, { dir: mboxDir });
+  assert.equal(left.length, 1);
+  assert.equal(left[0].text, 'dirty composer steer');
+});
+
 test('a fallback that sent but could not prove it (exit 3) is not re-queued', async () => {
   fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
   const { code } = await runSend(
@@ -431,7 +447,7 @@ test('pruneStale keeps a pre-move key while its session is live under another cw
   }
 });
 
-// 2026-09-11 steer P1-1: a window with no mailbox consumer behind it (an omp
+// 2026-09-11: a window with no mailbox consumer behind it (an omp
 // tab, a plain shell, a sender-only cwd) falls back to kitty-send — the
 // supervisor steer path — while ambiguity stays fatal.
 test('agent-send to a sender-only window falls back to kitty-send, never self-sends', async () => {
@@ -566,7 +582,7 @@ test('resolution errors carry codes; no-consumer messages name kitty-send', () =
   }
 });
 
-// 2026-09-11 steer P1-2: a sender addressing the PRE-move key after the move.
+// 2026-09-11: a sender addressing the PRE-move key after the move.
 // The exact-key lookup misses (no beacon carries the old cwd), but the
 // session id never moves, so the `__<sid>` suffix resolves to the beacon's
 // current key.
@@ -650,7 +666,7 @@ test('agent-send to a pre-move key queues in the current key file and is acked',
   }
 });
 
-// 2026-09-12 P3: a window id resolves by the window id the recipient recorded
+// 2026-09-12: a window id resolves by the window id the recipient recorded
 // in its beacon, not by cwd. Two sessions sharing one cwd in different
 // windows are addressable by window id (2026-09-12 00:00:03Z: window 35
 // matched 2 live sessions on one cwd).
@@ -759,7 +775,7 @@ test('agent-send --help names the inbox read verb', async () => {
   assert.match(out.stdout, /inbox/i);
 });
 
-// Addendum P3-exit8 (P2 unmerged here): kitty-send exit 8 means sent under
+// kitty-send exit 8 means sent under
 // --now while mid-turn and still mid-turn at the deadline — pending in the
 // steering queue, not lost. agent-send passes the code through and names it
 // as pending instead of a failure.

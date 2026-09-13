@@ -52,7 +52,30 @@ const BANNER_ONLY = [
 
 const WIZARD = ['Welcome to omp', 'Setup step 1 of 5', 'Select provider to login', ''].join('\n');
 
-let binDir, stateDir, homeDir;
+let binDir, stateDir, homeDir, linkDir;
+const LINK_PTS = '7';
+// Session rows the state script accepts for the stub window (which serves
+// cwd /tmp/omptab-cwd and no created_at, so the age check is skipped): a
+// session row, an optional FIRST model_change row naming the launch model,
+// and an assistant stop tail (state=idle). omp-tab.sh closes the window when
+// no model_change row proves the launch model, so every exit-0 test runs
+// under a linked session; model=null leaves the model_change row out.
+const writeLinkSession = async (dir, model) => {
+  const now = new Date().toISOString();
+  const sess = path.join(dir, 'tab.jsonl');
+  const mc =
+    model === null
+      ? ''
+      : `{"type":"model_change","id":"m1","parentId":null,"timestamp":"${now}","model":"${model}","resolvedModelIsFallback":false}\n`;
+  await fs.writeFile(
+    sess,
+    `{"type":"session","version":3,"id":"01selftest","timestamp":"${now}","cwd":"/tmp/omptab-cwd"}\n` +
+      mc +
+      `{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop","timestamp":${Date.now()}}}\n`,
+  );
+  await fs.writeFile(path.join(dir, `pts-${LINK_PTS}`), `/tmp/omptab-cwd\n${sess}\n`);
+  return sess;
+};
 
 // Every binary the script reaches that before() replaces with a stub, and the
 // PATH that puts the stubs first. runScript and the before() check share it,
@@ -83,6 +106,10 @@ before(async () => {
     '    printf \'%s\\n\' "${@: -1}" > "$state/echo"',
     '    touch "$state/sent"',
     '    ;;',
+    '  @/close-window)',
+    '    printf \'%s\\n\' "$*" > "$state/close-args"',
+    '    touch "$state/closed"',
+    '    ;;',
     '  @/get-text)',
     '    cat "$state/screen" 2>/dev/null',
     '    [ -f "$state/sent" ] && cat "$state/echo"',
@@ -103,7 +130,7 @@ before(async () => {
     '#!/usr/bin/env bash',
     `state=${JSON.stringify(stateDir)}`,
     'printf \'%s\\n\' "$*" >> "$state/omp-calls"',
-    // #560: the tools gate probes `omp -p --no-session --tools "$TOOLS"` before
+    // The tools gate probes `omp -p --no-session --tools "$TOOLS"` before
     // any launch. Emulate omp 18.1.17: browser notebook python computer ask are
     // rejected even though `omp --help` still lists them; everything else passes.
     'tools=""',
@@ -142,13 +169,16 @@ before(async () => {
     '#!/usr/bin/env bash\n# Stub: eval\'d before the preflight; the balance check reads the key it exports.\nprintf \'%s\\n\' "export DEEPSEEK_API_KEY=stub"\n',
     { mode: 0o755 },
   );
-  // The account default a bare launch resolves to, read from the same file the
-  // script reads on the real machine.
   await fs.mkdir(path.join(homeDir, '.omp', 'agent'), { recursive: true });
   await fs.writeFile(
     path.join(homeDir, '.omp', 'agent', 'config.yml'),
     'modelRoles:\n  smol: opencode-go/muse-spark-1.3-contributor\n  default: opencode-go/muse-spark-1.3-contributor:high\n',
   );
+  // The session link every exit-0 test runs under: without it the model
+  // proof closes the window, which is the point of the model-check tests and
+  // noise everywhere else. Lives under stateDir so after() removes it.
+  linkDir = await fs.mkdtemp(path.join(stateDir, 'link-'));
+  await writeLinkSession(linkDir, 'opencode-go/muse-spark-1.3-contributor');
   // The stubs are the harness: if one is missing, PATH falls through to the
   // real binary (~/.local/bin/omp and kitty on the developer machine) and the
   // suite runs it with no visible difference. Refuse here, before any test.
@@ -170,17 +200,18 @@ after(async () => {
   await fs.rm(homeDir, { recursive: true, force: true }).catch(() => {});
 });
 const reset = async (screen) => {
-  for (const f of ['sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'balance.json'])
+  for (const f of ['sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'balance.json', 'closed', 'close-args'])
     await fs.rm(path.join(stateDir, f), { force: true });
   await fs.writeFile(path.join(stateDir, 'screen'), screen);
+  // A test that appended rows to the shared link leaves it dirty for the
+  // next; rewrite the idle default every reset.
+  if (linkDir) await writeLinkSession(linkDir, 'opencode-go/muse-spark-1.3-contributor');
 };
-
 const launched = async () =>
   await fs
     .access(path.join(stateDir, 'launched'))
     .then(() => true)
     .catch(() => false);
-
 const runScript = async (args, extraEnv = {}) => {
   try {
     const r = await run(SCRIPT, args, {
@@ -189,6 +220,13 @@ const runScript = async (args, extraEnv = {}) => {
         PATH: stubPath(),
         XDG_RUNTIME_DIR: stateDir,
         HOME: homeDir,
+        // Every launch runs under the shared linked session (the model proof
+        // needs it); a test with its own link or timeout overrides these.
+        // The short send timeout bounds kitty-send's session-row wait: the
+        // started-working gate below it still confirms, so exit 0 is intact.
+        KITTY_SEND_TIMEOUT: '3',
+        OMP_TAB_STATE_DIR: linkDir,
+        OMP_TAB_STATE_PTS_N: LINK_PTS,
         KEY_COMMAND: path.join(binDir, 'key-command'),
         ...extraEnv,
       },
@@ -251,7 +289,7 @@ test('a brief with GROUND TRUTH still launches', async () => {
   assert.equal(await launched(), true);
 });
 
-// ---- #560: --tools is validated headless before any window opens ----
+// ---- --tools is validated headless before any window opens ----
 //
 // The 2026-09-11 launch passed `--tools …,browser`, the window died in
 // seconds, and the script blamed the key step (rc 0 by hand) because the real
@@ -494,7 +532,14 @@ test('an explicit --model that cannot serve is refused with the reason, and noth
 test('--fallback takes the next usable entry for an explicit --model and says so', async () => {
   await reset(NEW_TUI_FLASH);
   await failModels('opencode-go/glm-5.3', 'opencode-go/muse-spark-1.3-contributor');
-  const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'opencode-go/glm-5.3', '--fallback']);
+  // The walk lands on Flash, outside the shipped allowlist: permit it here so
+  // the walk (not the gate) is what is under test.
+  const prov = await flashProviders();
+  const st = await mkSessionEnv('opencode-go/deepseek-v4-flash');
+  const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'opencode-go/glm-5.3', '--fallback'], {
+    OMP_TAB_PROVIDERS: prov,
+    ...st.env,
+  });
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.err, /FALLBACK: opencode-go\/glm-5\.3 cannot serve .* launching on opencode-go\/deepseek-v4-flash/);
   assert.match(await launchArgs(), /--model opencode-go\/deepseek-v4-flash/, 'the tab is pinned to what was proved');
@@ -506,7 +551,11 @@ test('a default that cannot serve falls back without a flag', async () => {
   // `default` is the bare probe; the first fallback entry IS the default and is
   // skipped by name, so the walk must land on the second.
   await failModels('default', 'opencode-go/muse-spark-1.3-contributor');
-  const r = await runScript(baseArgs('brief-gt.md'));
+  // The walk lands on Flash, outside the shipped allowlist: permit it here so
+  // the walk (not the gate) is what is under test.
+  const prov = await flashProviders();
+  const st = await mkSessionEnv('opencode-go/deepseek-v4-flash');
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, ...st.env });
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.err, /FALLBACK: opencode-go\/muse-spark-1\.3-contributor cannot serve/);
   assert.match(await launchArgs(), /--model opencode-go\/deepseek-v4-flash/);
@@ -541,7 +590,10 @@ test('a switched-off provider is refused before any check runs', async () => {
   // And the walk skips it: a default that fails must land on opencode-go, not on the off row.
   await reset(NEW_TUI_FLASH);
   await failModels('default');
-  const r2 = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: off });
+  // providers-off.json carries no allowlist, so the gate passes; the session
+  // proof still needs the model the walk lands on.
+  const st = await mkSessionEnv('opencode-go/deepseek-v4-flash');
+  const r2 = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: off, ...st.env });
   assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
   assert.match(await launchArgs(), /--model opencode-go\/deepseek-v4-flash/);
 });
@@ -558,7 +610,14 @@ test('the balance check refuses a drained deepseek/* with the figure and the top
   // A solvent balance passes without a probe either.
   await reset(NEW_TUI_FLASH);
   await fs.writeFile(path.join(stateDir, 'balance.json'), '{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"4.20"}]}');
-  const r2 = await runScript([...baseArgs('brief-gt.md'), '--model', 'deepseek/deepseek-v4-flash']);
+  // deepseek/Flash is outside the shipped allowlist: permit it here so the
+  // balance pass (not the gate) is what is under test.
+  const bprov = await flashProviders();
+  const bst = await mkSessionEnv('deepseek/deepseek-v4-flash');
+  const r2 = await runScript([...baseArgs('brief-gt.md'), '--model', 'deepseek/deepseek-v4-flash'], {
+    OMP_TAB_PROVIDERS: bprov,
+    ...bst.env,
+  });
   assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
   assert.match(r2.err, /preflight: deepseek\/deepseek-v4-flash can serve/);
   assert.match(await launchArgs(), /--model deepseek\/deepseek-v4-flash/);
@@ -650,7 +709,14 @@ test('an explicit --model still launches when the default is emptied', async () 
   await reset(NEW_TUI_FLASH);
   await fs.writeFile(configFile(), 'modelRoles:\n  default:\n');
   try {
-    const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'opencode-go/deepseek-v4-flash']);
+    // Flash is outside the shipped allowlist: permit it here so the
+    // emptied-default path (not the gate) is what is under test.
+    const eprov = await flashProviders();
+    const est = await mkSessionEnv('opencode-go/deepseek-v4-flash');
+    const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'opencode-go/deepseek-v4-flash'], {
+      OMP_TAB_PROVIDERS: eprov,
+      ...est.env,
+    });
     assert.equal(r.code, 0, `${r.out}${r.err}`);
     assert.equal(await launched(), true);
   } finally {
@@ -698,4 +764,120 @@ test('the lean overlay disables project config and the third-party providers', a
   assert.match(yml, /^mcp\.enableProjectConfig: false$/m, 'project-root mcp.json files are excluded');
   for (const p of ['claude', 'codex', 'gemini', 'opencode', 'cursor', 'windsurf', 'marketplace', 'vscode'])
     assert.match(yml, new RegExp(`^  - ${p}$`, 'm'), `provider ${p} is denied`);
+});
+
+// ---- The allowlist and the session-file model proof ----
+//
+// On 2026-09-13 a tab launched "as anthropic/claude-opus-5" (modelRoles.default
+// read Opus at launch) and ran 5 assistant turns on it before anyone noticed,
+// although an earlier change was believed to check the session file already.
+// Now the providers table carries allowedModels, a resolved model outside it
+// is refused before launch, and after the prompt the FIRST model_change row
+// must name the launched model or the window is closed with exit 3.
+const allowProviders = async (list) => {
+  const p = path.join(stateDir, `providers-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`);
+  await fs.writeFile(p, JSON.stringify({ providers: {}, fallback: [], allowedModels: list }));
+  return p;
+};
+// A providers table for the fallback tests that land on Flash: same checks
+// as the real table, but the allowlist permits every fallback entry, so the
+// walk (not the gate) is what is under test.
+const flashProviders = async () => {
+  const p = path.join(stateDir, `providers-flash-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`);
+  await fs.writeFile(
+    p,
+    JSON.stringify({
+      providers: {
+        'opencode-go': { enabled: true, check: 'probe' },
+        deepseek: {
+          enabled: true,
+          check: 'balance',
+          balanceUrl: 'https://api.deepseek.com/user/balance',
+          topUp: 'https://platform.deepseek.com/top_up',
+        },
+      },
+      fallback: [
+        'opencode-go/muse-spark-1.3-contributor',
+        'opencode-go/deepseek-v4-flash',
+        'deepseek/deepseek-v4-flash',
+      ],
+      allowedModels: [
+        'opencode-go/muse-spark-1.3-contributor',
+        'opencode-go/deepseek-v4-flash',
+        'deepseek/deepseek-v4-flash',
+      ],
+    }),
+  );
+  return p;
+};
+// A private linked session for one test (the shared linkDir serves the rest).
+// model=null omits the model_change row.
+const mkSessionEnv = async (model) => {
+  const dir = await fs.mkdtemp(path.join(stateDir, 'sess-'));
+  const sess = await writeLinkSession(dir, model);
+  return { dir, sess, env: { OMP_TAB_STATE_DIR: dir, OMP_TAB_STATE_PTS_N: LINK_PTS } };
+};
+const closedArgs = async () => fs.readFile(path.join(stateDir, 'close-args'), 'utf8').catch(() => '');
+const wasSent = async () =>
+  await fs
+    .access(path.join(stateDir, 'sent'))
+    .then(() => true)
+    .catch(() => false);
+
+test('a disallowed default is refused before launch', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  await fs.writeFile(configFile(), 'modelRoles:\n  default: anthropic/claude-opus-5\n');
+  try {
+    const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov });
+    assert.equal(r.code, 1, `${r.out}${r.err}`);
+    assert.match(r.err, /not in allowedModels/, 'the refusal names the allowlist');
+    assert.ok(r.err.includes(prov), 'the refusal names the file');
+    assert.equal(await launched(), false);
+  } finally {
+    await fs.writeFile(configFile(), GOOD_CONFIG);
+  }
+});
+
+test('an allowed default whose session file names another model is closed with exit 3', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const st = await mkSessionEnv('anthropic/claude-opus-5');
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, ...st.env });
+  assert.equal(r.code, 3, `${r.out}${r.err}`);
+  assert.match(r.out + r.err, /WINDOW_ID=991001/, 'exit 3 still prints the window id');
+  assert.match(r.err, /anthropic\/claude-opus-5/, 'the verdict names the model it found');
+  assert.match(await closedArgs(), /991001/, 'the mismatched window was closed');
+  assert.equal(await wasSent(), false, 'nothing is sent to a mismatched tab');
+});
+
+test('a session file naming the launched model passes', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const st = await mkSessionEnv('opencode-go/muse-spark-1.3-contributor');
+  // kitty-send proves a linked tab by a NEW role:user row past the pre-send
+  // line count; nothing appends one here, so steer one in the background the
+  // way kitty-send.test.sh case 15 does.
+  const userRow = `{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"steer"}],"timestamp":${Date.now()}}}\n`;
+  const append = new Promise((res, rej) => setTimeout(() => fs.appendFile(st.sess, userRow).then(res, rej), 1000));
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, ...st.env });
+  await append;
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /proven from the tab's session file/, 'the launched-as note carries the proven model');
+  assert.equal(await launched(), true);
+});
+
+test('a missing session file closes the window with exit 3', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const dir = await fs.mkdtemp(path.join(stateDir, 'sess-empty-'));
+  const r = await runScript(baseArgs('brief-gt.md'), {
+    OMP_TAB_PROVIDERS: prov,
+    OMP_TAB_STATE_DIR: dir,
+    OMP_TAB_STATE_PTS_N: '7',
+  });
+  assert.equal(r.code, 3, `${r.out}${r.err}`);
+  assert.match(r.err, /could not prove the launch model/, '"could not check" says so');
+  assert.match(await closedArgs(), /991001/, 'the unproven window was closed');
+  assert.equal(await wasSent(), false, 'nothing is sent to an unproven tab');
 });
