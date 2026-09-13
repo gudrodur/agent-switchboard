@@ -132,6 +132,9 @@ before(async () => {
     '#!/usr/bin/env bash',
     `state=${JSON.stringify(stateDir)}`,
     'printf \'%s\\n\' "$*" >> "$state/omp-calls"',
+    // What the probe SAW: one line per invocation, so a test can prove the
+    // headless probes run with no window id and throwaway store paths.
+    'printf \'KITTY_WINDOW_ID=%s DB=%s DIR=%s XDG=%s MBOX=%s PRES=%s\\n\' "${KITTY_WINDOW_ID-__UNSET__}" "${AGENT_SWITCHBOARD_DB-__UNSET__}" "${AGENT_SWITCHBOARD_DIR-__UNSET__}" "${XDG_STATE_HOME-__UNSET__}" "${AGENT_SWITCHBOARD_MAILBOX_DIR-__UNSET__}" "${AGENT_SWITCHBOARD_PRESENCE_FILE-__UNSET__}" >> "$state/omp-env"',
     // The tools gate probes `omp -p --no-session --tools "$TOOLS"` before
     // any launch. Emulate omp 18.1.17: browser notebook python computer ask are
     // rejected even though `omp --help` still lists them; everything else passes.
@@ -202,7 +205,7 @@ after(async () => {
   await fs.rm(homeDir, { recursive: true, force: true }).catch(() => {});
 });
 const reset = async (screen) => {
-  for (const f of ['sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'balance.json', 'closed', 'close-args'])
+  for (const f of ['sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'omp-env', 'balance.json', 'closed', 'close-args'])
     await fs.rm(path.join(stateDir, f), { force: true });
   await fs.writeFile(path.join(stateDir, 'screen'), screen);
   // A test that appended rows to the shared link leaves it dirty for the
@@ -517,6 +520,34 @@ test('a usable default is probed once and the status line names provider/model',
   assert.match(r.err, /launched as opencode-go\/muse-spark-1\.3-contributor/);
   assert.doesNotMatch(await launchArgs(), /--model/, 'a usable default is inherited, never pinned');
   assert.equal((await ompCalls()).trim().split('\n').length, 1, 'one probe, no more');
+});
+
+test('the preflight probe runs with no window id and throwaway store paths', async () => {
+  await reset(NEW_TUI);
+  // A planted ambient store the probe must NOT see: without isolation the
+  // probe inherits it (and the launcher window) and registers a beacon there.
+  const liveDb = path.join(stateDir, 'live-state.db');
+  const r = await runScript(baseArgs('brief-gt.md'), {
+    KITTY_WINDOW_ID: '4242',
+    AGENT_SWITCHBOARD_DB: liveDb,
+    AGENT_SWITCHBOARD_DIR: path.join(stateDir, 'live-switchboard'),
+  });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  const lines = (await fs.readFile(path.join(stateDir, 'omp-env'), 'utf8')).trim().split('\n');
+  assert.ok(lines.length >= 1, 'the probe must have run');
+  for (const line of lines) {
+    const seen = Object.fromEntries(line.trim().split(' ').map((kv) => kv.split('=')));
+    assert.equal(seen.KITTY_WINDOW_ID, '__UNSET__', `the probe must not see the launcher window: ${line}`);
+    for (const k of ['DB', 'DIR', 'XDG', 'MBOX', 'PRES']) {
+      assert.notEqual(seen[k], '__UNSET__', `the probe must pin a throwaway ${k}: ${line}`);
+      assert.ok(seen[k].startsWith(os.tmpdir() + path.sep), `the probe ${k} must be a temp path, got ${seen[k]}`);
+    }
+    assert.notEqual(seen.DB, liveDb, 'the probe must not use the ambient store');
+    await fs.access(seen.DB).then(
+      () => assert.fail(`the probe must leave no store file behind, but ${seen.DB} exists`),
+      () => {},
+    );
+  }
 });
 
 test('an explicit --model that cannot serve is refused with the reason, and nothing is launched', async () => {

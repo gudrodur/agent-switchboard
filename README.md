@@ -92,7 +92,7 @@ omp-tab.sh --close <window-id>
 omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]
 ```
 
-`--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A launch checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key:
+`--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A launch checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key: the serve probe is itself a session-less run, executed with no window id and throwaway store paths, so it leaves no beacon or state behind.
 
 ```sh
 export OMP_TAB_KEY_COMMAND='...'   # stdout emits the export line the tab evals before exec
@@ -131,7 +131,7 @@ The mailbox and presence beacons live in one SQLite file (`AGENT_SWITCHBOARD_DB`
 
 Backend choice, in order: an explicit `{dir}` / `{file}` override means JSON files (the hermetic path the tests exercise); else an explicit `AGENT_SWITCHBOARD_DB` wins and the store backs everything; else the legacy `AGENT_SWITCHBOARD_MAILBOX_DIR` / `AGENT_MAILBOX_DIR` / `AGENT_SWITCHBOARD_PRESENCE_FILE` pins keep the JSONL backend while set. The store's first open imports the legacy files once (recorded in the `meta` table, so a second open imports nothing) and leaves them in place.
 
-Retention, enforced by `pruneStale`: acked or cancelled rows are deleted 14 days after their ack/withdraw marker, markers included. Unacked rows are never deleted by retention — a closed session's rows survive it, so a probe's evidence outlives its session.
+Retention, enforced by `pruneStale`: acked or cancelled rows are deleted 14 days after their ack/withdraw marker, markers included. Unacked rows are never deleted by retention — a closed session's rows survive it, so a probe's evidence outlives its session. A session-less run (no session id) records nothing: the consumer hook writes no beacon and starts no idle watcher, so it leaves no rows or beacons behind.
 
 ## Limits, plainly
 
