@@ -532,8 +532,7 @@ test('an explicit --model that cannot serve is refused with the reason, and noth
 test('--fallback takes the next usable entry for an explicit --model and says so', async () => {
   await reset(NEW_TUI_FLASH);
   await failModels('opencode-go/glm-5.3', 'opencode-go/muse-spark-1.3-contributor');
-  // The walk lands on Flash, outside the shipped allowlist: permit it here so
-  // the walk (not the gate) is what is under test.
+  // A private providers table keeps the walk (not the shipped table) under test.
   const prov = await flashProviders();
   const st = await mkSessionEnv('opencode-go/deepseek-v4-flash');
   const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'opencode-go/glm-5.3', '--fallback'], {
@@ -551,11 +550,24 @@ test('a default that cannot serve falls back without a flag', async () => {
   // `default` is the bare probe; the first fallback entry IS the default and is
   // skipped by name, so the walk must land on the second.
   await failModels('default', 'opencode-go/muse-spark-1.3-contributor');
-  // The walk lands on Flash, outside the shipped allowlist: permit it here so
-  // the walk (not the gate) is what is under test.
+  // A private providers table keeps the walk (not the shipped table) under test.
   const prov = await flashProviders();
   const st = await mkSessionEnv('opencode-go/deepseek-v4-flash');
   const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, ...st.env });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /FALLBACK: opencode-go\/muse-spark-1\.3-contributor cannot serve/);
+  assert.match(await launchArgs(), /--model opencode-go\/deepseek-v4-flash/);
+  assert.doesNotMatch(await ompCalls(), /--model opencode-go\/muse-spark-1\.3-contributor/, 'the failed default is not probed twice');
+});
+
+// No OMP_TAB_PROVIDERS: this runs against the shipped config/omp-providers.json.
+test('the shipped example table lets the fallback walk launch on Flash', async () => {
+  await reset(NEW_TUI_FLASH);
+  // `default` is the bare probe; the first fallback entry IS the default and is
+  // skipped by name, so the walk must land on the second.
+  await failModels('default', 'opencode-go/muse-spark-1.3-contributor');
+  const st = await mkSessionEnv('opencode-go/deepseek-v4-flash');
+  const r = await runScript(baseArgs('brief-gt.md'), { ...st.env });
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.err, /FALLBACK: opencode-go\/muse-spark-1\.3-contributor cannot serve/);
   assert.match(await launchArgs(), /--model opencode-go\/deepseek-v4-flash/);
@@ -610,8 +622,8 @@ test('the balance check refuses a drained deepseek/* with the figure and the top
   // A solvent balance passes without a probe either.
   await reset(NEW_TUI_FLASH);
   await fs.writeFile(path.join(stateDir, 'balance.json'), '{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"4.20"}]}');
-  // deepseek/Flash is outside the shipped allowlist: permit it here so the
-  // balance pass (not the gate) is what is under test.
+  // A private providers table keeps the balance pass (not the shipped table)
+  // under test.
   const bprov = await flashProviders();
   const bst = await mkSessionEnv('deepseek/deepseek-v4-flash');
   const r2 = await runScript([...baseArgs('brief-gt.md'), '--model', 'deepseek/deepseek-v4-flash'], {
@@ -709,8 +721,8 @@ test('an explicit --model still launches when the default is emptied', async () 
   await reset(NEW_TUI_FLASH);
   await fs.writeFile(configFile(), 'modelRoles:\n  default:\n');
   try {
-    // Flash is outside the shipped allowlist: permit it here so the
-    // emptied-default path (not the gate) is what is under test.
+    // A private providers table keeps the emptied-default path (not the
+    // shipped table) under test.
     const eprov = await flashProviders();
     const est = await mkSessionEnv('opencode-go/deepseek-v4-flash');
     const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'opencode-go/deepseek-v4-flash'], {
