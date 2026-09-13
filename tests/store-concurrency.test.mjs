@@ -10,22 +10,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
 const LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'lib');
 const N = 1000;
 
-const childEnv = (db, dir) => {
-  const env = {
-    ...process.env,
-    AGENT_SWITCHBOARD_DB: db,
-    AGENT_SWITCHBOARD_DIR: path.join(dir, 'switchboard'),
-  };
-  delete env.AGENT_SWITCHBOARD_MAILBOX_DIR;
-  delete env.AGENT_MAILBOX_DIR;
-  delete env.AGENT_SWITCHBOARD_PRESENCE_FILE;
-  return env;
-};
+const childEnv = (db, dir) => isolatedEnv({
+  AGENT_SWITCHBOARD_DB: db,
+  AGENT_SWITCHBOARD_DIR: path.join(dir, 'switchboard'),
+});
 
 const writer = (tag) => `
 import { appendMessage } from ${JSON.stringify(path.join(LIB, 'agent-mailbox.mjs'))};

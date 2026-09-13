@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
 const run = promisify(execFile);
@@ -64,7 +65,7 @@ after(async () => {
 const runScript = async (args, extraEnv = {}) => {
   try {
     const r = await run(SCRIPT, args, {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, ...extraEnv },
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, ...extraEnv }),
       timeout: 20_000,
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -226,7 +227,7 @@ const wLink = (dir, lines) => fs.writeFile(path.join(dir, 'wtab.jsonl'), lines.j
   .then((fp) => fs.writeFile(path.join(dir, `kitty-${WID}`), `\n${path.join(dir, 'wtab.jsonl')}\n`));
 const wSend = (args, dir, extraEnv = {}) => {
   const p = run(SCRIPT, args, {
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, OMP_TAB_STATE_DIR: dir, ...extraEnv },
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, OMP_TAB_STATE_DIR: dir, ...extraEnv }),
   });
   return p.then(
     (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),

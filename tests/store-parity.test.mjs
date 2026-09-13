@@ -12,20 +12,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 
 const LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'lib');
 
-const childEnv = (db, dir) => {
-  const env = {
-    ...process.env,
-    AGENT_SWITCHBOARD_DB: db,
-    AGENT_SWITCHBOARD_DIR: path.join(dir, 'switchboard'),
-  };
-  delete env.AGENT_SWITCHBOARD_MAILBOX_DIR;
-  delete env.AGENT_MAILBOX_DIR;
-  delete env.AGENT_SWITCHBOARD_PRESENCE_FILE;
-  return env;
-};
+const childEnv = (db, dir) => isolatedEnv({
+  AGENT_SWITCHBOARD_DB: db,
+  AGENT_SWITCHBOARD_DIR: path.join(dir, 'switchboard'),
+});
 
 const run = (bin, script, env) => {
   const r = spawnSync(bin, ['--input-type=module', '-e', script], { env, encoding: 'utf-8' });
@@ -45,21 +39,23 @@ process.stdout.write(JSON.stringify(readUnacked('parity__s', {}).map((r) => r.te
 
 const SWAPPED_KEYS = [
   'AGENT_SWITCHBOARD_DB',
+  'AGENT_SWITCHBOARD_DIR',
   'AGENT_SWITCHBOARD_MAILBOX_DIR',
-  'AGENT_MAILBOX_DIR',
   'AGENT_SWITCHBOARD_PRESENCE_FILE',
+  'AGENT_SWITCHBOARD_SEND',
+  'AGENT_SWITCHBOARD_SENDER',
+  'AGENT_MAILBOX_DIR',
+  'AGENT_MAILBOX_PRESENCE_FILE',
+  'AGENT_MAILBOX_KITTY',
 ];
-
 test('bun writes, node reads, and the reverse', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-parity-'));
   const saved = Object.fromEntries(SWAPPED_KEYS.map((k) => [k, process.env[k]]));
   try {
     const db = path.join(dir, 'parity.db');
     const env = childEnv(db, dir);
+    for (const k of SWAPPED_KEYS) delete process.env[k];
     process.env.AGENT_SWITCHBOARD_DB = db;
-    delete process.env.AGENT_SWITCHBOARD_MAILBOX_DIR;
-    delete process.env.AGENT_MAILBOX_DIR;
-    delete process.env.AGENT_SWITCHBOARD_PRESENCE_FILE;
     const { appendMessage, readUnacked } = await import('../lib/agent-mailbox.mjs');
 
     run('bun', bunAppend('from-bun'), env);

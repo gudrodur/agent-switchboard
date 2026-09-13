@@ -20,8 +20,12 @@ const SWAPPED_KEYS = [
   'AGENT_SWITCHBOARD_DB',
   'AGENT_SWITCHBOARD_DIR',
   'AGENT_SWITCHBOARD_MAILBOX_DIR',
-  'AGENT_MAILBOX_DIR',
   'AGENT_SWITCHBOARD_PRESENCE_FILE',
+  'AGENT_SWITCHBOARD_SEND',
+  'AGENT_SWITCHBOARD_SENDER',
+  'AGENT_MAILBOX_DIR',
+  'AGENT_MAILBOX_PRESENCE_FILE',
+  'AGENT_MAILBOX_KITTY',
 ];
 
 const withIsolatedHome = async (fn) => {
@@ -29,11 +33,9 @@ const withIsolatedHome = async (fn) => {
   const saved = Object.fromEntries(SWAPPED_KEYS.map((k) => [k, process.env[k]]));
   try {
     process.env.HOME = home;
-    delete process.env.AGENT_SWITCHBOARD_DIR;
-    delete process.env.XDG_STATE_HOME;
-    delete process.env.AGENT_SWITCHBOARD_MAILBOX_DIR;
-    delete process.env.AGENT_MAILBOX_DIR;
-    delete process.env.AGENT_SWITCHBOARD_PRESENCE_FILE;
+    for (const k of SWAPPED_KEYS) {
+      if (k !== 'HOME') delete process.env[k];
+    }
     return await fn(home);
   } finally {
     for (const k of SWAPPED_KEYS) {

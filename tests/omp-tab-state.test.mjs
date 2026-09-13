@@ -19,6 +19,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
 const run = promisify(execFile);
@@ -97,10 +98,10 @@ const clearLinks = async () => {
 const runScript = async (args, extraEnv = {}) => {
   try {
     const r = await run(SCRIPT, args, {
-      env: {
-        ...process.env, PATH: `${binDir}:${process.env.PATH}`,
+      env: isolatedEnv({
+        PATH: `${binDir}:${process.env.PATH}`,
         OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', ...extraEnv,
-      },
+      }),
       timeout: 30_000,
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -277,7 +278,7 @@ test('--watch emits exactly the transitions', async () => {
   await writeSession(name, [titleRow(), sessionRow(WCWD, nowIso()), assistantRow('stop', t - 9000)]);
   await linkKitty(name);
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' },
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -297,7 +298,7 @@ test('--watch emits exactly the transitions', async () => {
 test('--watch survives tab startup: unknown until the session file appears ', async () => {
   await clearLinks();
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' },
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -321,7 +322,7 @@ test('--watch on a gone window ends with state=gone, never waits forever', async
   await clearLinks();
   await fs.writeFile(path.join(sessDir, 'no-window'), '');
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' },
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -336,7 +337,7 @@ test('--watch reports gone when the window closes mid-watch', async () => {
   await writeSession('closing.jsonl', [titleRow(), sessionRow(WCWD, nowIso()), assistantRow('stop', t)]);
   await linkKitty('closing.jsonl');
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' },
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
