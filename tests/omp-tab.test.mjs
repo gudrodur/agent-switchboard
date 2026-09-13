@@ -771,11 +771,22 @@ test('an unknown --mcp value refuses and launches nothing', async () => {
   assert.equal(await launched(), false);
 });
 
+test('OMP_TAB_LEAN_YML overrides the checkout overlay on a default launch', async () => {
+  await reset(NEW_TUI);
+  const custom = path.join(stateDir, 'custom-lean.yml');
+  await fs.writeFile(custom, 'disabledProviders: []\n');
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_LEAN_YML: custom });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(await launchArgs(), new RegExp(`--config ${custom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the setting wins over the checkout default');
+});
+
 test('the lean overlay disables project config and the third-party providers', async () => {
   const yml = await fs.readFile(LEAN_YML, 'utf8');
-  assert.match(yml, /^mcp\.enableProjectConfig: false$/m, 'project-root mcp.json files are excluded');
+  assert.match(yml, /^mcp:\n  enableProjectConfig: false$/m, 'project-root mcp.json files are excluded');
   for (const p of ['claude', 'codex', 'gemini', 'opencode', 'cursor', 'windsurf', 'marketplace', 'vscode'])
     assert.match(yml, new RegExp(`^  - ${p}$`, 'm'), `provider ${p} is denied`);
+  assert.doesNotMatch(yml, /^\w+\.\w+:/m, 'no dotted overlay key remains (silently ignored)');
+  assert.match(yml, /^# skills:\n#   customDirectories:\n#     - \S+$/m, 'the skills stanza ships as a commented example, never a personal path');
 });
 
 // ---- The allowlist and the session-file model proof ----

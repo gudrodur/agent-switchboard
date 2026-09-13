@@ -84,6 +84,24 @@ const kittySend = () => process.env.AGENT_SEND_KITTY_SEND ?? process.env.AGENT_S
 // send is already queued, 7 mid-turn without --now/--queue/--wait-idle, 9
 // the composer already held a paste chip that is not kitty-send's own.
 const KITTY_SENT_NOTHING = new Set([1, 4, 5, 6, 7, 9]);
+const KITTY_NOTHING_REASON = {
+  1: 'usage or precondition error',
+  4: 'selection dialog open',
+  5: 'idle wait ran out',
+  6: 'send already queued',
+  7: 'mid-turn without --now/--queue/--wait-idle',
+  9: 'composer holds unsubmitted text',
+};
+
+// Where a queued kitty-send's delivery verdict lands. Numeric window targets
+// only; mirrors kitty-send.sh's QUEUE_DIR default. A fallback can exit 0
+// while the queue log later says exit 9 (nothing sent), so the verdict
+// needs a name, not just an exit code.
+const kittyQueueLog = (target) => {
+  if (!/^\d+$/.test(String(target))) return null;
+  const runtime = process.env.XDG_RUNTIME_DIR ?? process.env.TMPDIR ?? '/tmp';
+  return path.join(runtime, 'kitty-send', `queue-${target}.log`);
+};
 
 // kitty-send.sh --file sends this note rather than the file's bytes (a path
 // the target reads itself); the mailbox text carries the same note so the
@@ -211,6 +229,18 @@ const main = (argv) => {
     if (r.status === 8) {
       process.stderr.write(`agent-send: kitty-send exit 8 for ${args[1]}: pending in the steering queue until the tool boundary, not lost; do not resend\n`);
     }
+    // A fallback that sent NOTHING must say so with the reason and where the
+    // verdict lives: without this an exit 9 reads like delivery.
+    if (KITTY_SENT_NOTHING.has(r.status)) {
+      const qlog = kittyQueueLog(target);
+      process.stderr.write(
+        `agent-send: kitty-send exit ${r.status} for ${args[1]}: nothing was sent (${KITTY_NOTHING_REASON[r.status] ?? 'see kitty-send.sh'})` +
+        `${qlog ? `; kitty queue log: ${qlog}` : ''}; do not resend blind — check the tab first\n`,
+      );
+    } else if (r.status === 0 && args.includes('--queue') && kittyQueueLog(target)) {
+      // Queued, not delivered: the verdict arrives later and asynchronously,
+      process.stderr.write(`agent-send: kitty-send queued for ${args[1]}; delivery is pending — confirm it in ${kittyQueueLog(target)} (a later exit 9 there means nothing was sent)\n`);
+    }
     return r.status;
   };
   const kittyFallback = (why) => process.exit(runKittySend(why, to, text) ?? 1);
@@ -218,12 +248,15 @@ const main = (argv) => {
   try {
     recipient = resolveRecipient(to, { senderSessionId, senderCwd: process.cwd(), senderWindowId: senderWindowId() });
   } catch (e) {
+    // Never just "no consumer": a stale beacon (parked past the presence
+    // window) and no beacon at all need different next steps.
+    if (e?.code === 'mailbox-stale') kittyFallback(`stale mailbox beacon for ${to} (${e.message})`);
     if (e?.code === 'mailbox-self' || e?.code === 'mailbox-no-beacon') kittyFallback(`no mailbox consumer at ${to}`);
     die(e.message);
   }
 
   if (!recipient.hasConsumer) {
-    kittyFallback(`no consumer for ${to}`);
+    kittyFallback(`no mailbox consumer flag for ${to} (live beacon, flag off)`);
   }
   const from = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
   const row = appendMessage({ to: recipient.key, from, priority, text });

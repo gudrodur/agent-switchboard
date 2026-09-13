@@ -144,7 +144,7 @@ check() { # name expected_exit expected_substring actual_exit actual_output
   fi
 }
 
-MSG="PR  is good work and it goes further than the brief asked, correctly: you found the same read-then-write class"
+MSG="PR is good work and it goes further than the brief asked, correctly: you found the same read-then-write class"
 HEAD_ELIDED="1. ${MSG:0:98}…"
 
 echo "kitty-send.sh delivery confirmation"

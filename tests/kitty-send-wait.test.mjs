@@ -39,7 +39,7 @@ before(async () => {
   // sees it go idle and never sees it die. get-text/send-text succeed quietly.
   // KITTY_MOCK_SCREEN is what `@ get-text` returns, so a test can put the
   // target in a state ("parked", "showing a dialog") without a real kitty.
-  // Empty by default, which is what every pre- case assumed.
+  // Empty by default, which is what every earlier case assumed.
   await fs.writeFile(path.join(binDir, 'kitty'), `#!/usr/bin/env bash
 if [ "\${1:-}" = "@" ] && [ "\${2:-}" = "ls" ]; then
   printf '%s\\n' '[{"tabs":[{"title":"mock-tab","windows":[{"id":${WID},"title":"π ⠹ mock busy (never idle)","pid":424242,"cwd":"/tmp/kitty-wait-cwd"}]}]}]'
