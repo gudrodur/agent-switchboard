@@ -21,7 +21,7 @@
 #   3  launched but could not confirm it started (window id still printed; go look)
 # HELP-END
 #
-# Why this exists rather than the prose recipe in ~/.claude/skills/local-agents:
+# Why this exists rather than the prose recipe in $AGENT_CONFIG_HOME/skills/local-agents:
 # the recipe is six steps with four non-obvious failure modes, and a delegated
 # agent following prose gets it right most of the time, which is the worst
 # possible hit rate for something whose failures are all SILENT:
@@ -43,10 +43,12 @@
 #
 # It also refuses to close a window it did not launch. Borrowing another
 # session's omp window is the standing trap: measured on three consecutive days,
-# the only omp window on this machine belonged to a different Claude session.
+# the only omp window on this machine belonged to a different host-agent session.
 #
-# Ref: ~/.claude/skills/local-agents/SKILL.md § "DEFAULT: send it to a visible
-# omp terminal".
+# Ref: $AGENT_CONFIG_HOME/skills/local-agents/SKILL.md § "DEFAULT: send it to
+# a visible omp terminal" (~/.claude/skills/... before the root move — same
+# root contract as agent-config P2: $AGENT_CONFIG_HOME wins, else
+# ~/agent-config, else ~/.claude).
 
 set -uo pipefail
 
@@ -167,7 +169,7 @@ if [ "${1:-}" = "--close" ]; then
   row=$(grep "^$2 " "$STATE" 2>/dev/null | head -1)
   [ -n "$row" ] \
     || die "window $2 was not launched by this script — refusing to close it.
-        Another Claude session's omp window looks identical in \`kitty @ ls\`;
+        Another host-agent session's omp window looks identical in \`kitty @ ls\`;
         closing it interrupts work you cannot see."
 
   want_pid=$(printf '%s' "$row" | awk '{print $2}')
@@ -211,7 +213,7 @@ TITLE=""; BRIEF=""; OUT=""; CWD="$PWD"
 # servers at all, so there is no handshake and no
 # `Failed: Neon … HTTP 401 {"error":"invalid_token"}` line. That 401 was
 # correct behaviour under full discovery, not a broken config: the Neon
-# server is OAuth and omp holds no token where Claude Code does.
+# server is OAuth and omp holds no token where the host agent does.
 #
 # A profile was tried as the cure and is NOT one here. A headless
 # `-p --profile NAME` run does emit zero MCP lines, which is what the
@@ -568,7 +570,7 @@ kitty_up || die "kitty remote control unavailable.
             < $BRIEF > ${OUT:-out.md} 2> err.log" 2
 
 # Advisory, never fatal. An idle omp holds ~350 MB; on 2026-08-26 one left open
-# beside two Claude sessions helped fill 8 GB of swap and a CI job was OOM-killed.
+# beside two host-agent sessions helped fill 8 GB of swap and a CI job was OOM-killed.
 avail=$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null || echo "?")
 case "$avail" in ?*) awk -v a="$avail" 'BEGIN{exit !(a+0 < 1.5)}' \
   && note "WARNING: only ${avail} GiB available. omp needs ~350 MB; consider closing something first." ;; esac
@@ -649,9 +651,10 @@ WPID=$(win_pid "$WID")
 # Who launched it: the state file is per-uid, so without this every row reads
 # as "what THIS script launched" while belonging to any session on the machine
 # (measured once: 8 dead rows plus 2 live tabs of the other session). Prefer
-# the session id where the environment carries one (Claude Code sets
-# CLAUDE_SESSION_ID; measured 2026-09-09: absent in this harness, so checked,
-# not assumed); otherwise the kitty window the launcher ran in (KITTY_WINDOW_ID
+# the session id where the environment carries one (the host agent sets
+# CLAUDE_SESSION_ID — env name owned by the runtime, not renamed here;
+# measured 2026-09-09: absent in this harness, so checked, not assumed);
+# otherwise the kitty window the launcher ran in (KITTY_WINDOW_ID
 # — always set inside a kitty window). One token: the file is space-separated, one row per line.
 # --close is untouched: it matches on the id and refuses strangers as before.
 LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"

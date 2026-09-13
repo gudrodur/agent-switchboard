@@ -396,7 +396,7 @@ wait
 check "linked session file proves the send by state" 0 "proved by session row" "$RC" "$OUT"
 rm -rf "$STATEDIR15"
 # 16. UNSUBMITTED CHIP AFTER THE SEND — the composer false green. The
-#     fixture behaves like Claude Code's composer: the send-text burst lands
+#     fixture behaves like the host agent's composer: the send-text burst lands
 #     as a `[Pasted text #1 +1 lines]` chip (the \r swallowed inside it) and
 #     only an Enter keypress submits it. Before the fix this confirmed as
 #     "echoed at the prompt"; now one Enter goes out and the send confirms

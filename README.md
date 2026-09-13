@@ -30,7 +30,7 @@ A file-backed mailbox with acks between agents on two runtimes on one machine. W
 
 ## Install
 
-The hooks below plug into the Claude Code and omp runtimes, and the sender, fallback and launcher drive kitty; all three must be present for the full channel, while mailbox-only mode works anywhere node runs.
+The hooks below plug into the host-agent (Runtime A) and omp (Runtime B) runtimes, and the sender, fallback and launcher drive kitty; all three must be present for the full channel, while mailbox-only mode works anywhere node runs.
 
 ```sh
 git clone <repo-url> ~/agent-switchboard
@@ -39,7 +39,7 @@ export PATH="$HOME/agent-switchboard/bin:$PATH"
 
 `<checkout>` below is where you cloned it. Keep that checkout in place: the hooks import their siblings by relative path, so a hook file copied out on its own breaks.
 
-### Runtime A (Claude Code): the inbox hook
+### Runtime A (host agent): the inbox hook
 
 Add the repo's hook file, in place, to the existing `UserPromptSubmit` hook list in `settings.json`:
 

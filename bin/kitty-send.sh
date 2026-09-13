@@ -40,7 +40,7 @@
 #      NOT kitty-send's own leftover — NOTHING WAS SENT (it may be a human's
 #      draft; the message prints the recovery command)
 #
-# A composer echo is NOT delivery. Claude Code's
+# A composer echo is NOT delivery. The host agent's
 # composer collapses a send-text burst into a `[Pasted text #N +M lines]` chip
 # and swallows the trailing \r inside it, so the text sits in the text box
 # and the agent never sees it — while the fragment match would call it
@@ -284,7 +284,7 @@ enter_cmd_text() { # $1 = window id; the same Enter as a command a human can pas
 # Stranded-chip ownership. When
 # kitty-send leaves a chip it could not clear, it records, beside QUEUE_DIR:
 # the window id (the filename), the chip NUMBER(S) it left, the window's pid
-# and kitty created_at (Claude Code restarts chip numbering with a new
+# and kitty created_at (the host agent restarts chip numbering with a new
 # session, so a bare number can become false), and the time. `[Pastedtext#` is
 # not an identity; the number is. Ownership is a SUBSET test: every chip on
 # screen must be in this window's record, with pid and created_at matching.

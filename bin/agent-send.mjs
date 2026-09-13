@@ -158,11 +158,11 @@ const main = (argv) => {
   }
   // Inbox read: print this session's unacked rows and ack them, the pull path
   // for a session whose hook prompt has not delivered them yet (omp reads its
-  // inbox this way; Claude sessions get theirs injected at the next prompt).
+  // inbox this way; host-agent sessions get theirs injected at the next prompt).
   if (read) {
     if (to != null || text != null || file != null || mode != null || cancel) die('--read takes only --as');
     const sessionId = asSession ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
-    if (sessionId == null) die('--read needs --as <session-id> outside a Claude session');
+    if (sessionId == null) die('--read needs --as <session-id> outside a host-agent session');
     const found = readUnackedBySession(sessionId, {});
     for (const { key, row } of found) {
       process.stdout.write(`[${key}] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}\n`);

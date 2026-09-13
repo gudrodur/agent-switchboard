@@ -12,13 +12,14 @@
 # oh-my-pi, re-read 2026-09-13):
 # - `disabledProviders` hides every capability from the named discovery
 #   sources — MCP servers included, regardless of which tool config
-#   (.claude.json, .cursor/mcp.json, …) introduced them. It is global
+#   (.claude.json is the host agent's discovery file — filename owned by the
+#   runtime, not renamed here — .cursor/mcp.json, …) introduced them. It is global
 #   across capabilities, so there is no per-capability "MCP off, skills on"
 #   provider switch, and `disabledServers` is NOT a config.yml key at all —
 #   it lives in MCP files, so naming servers here is silently ignored
 #   (measured: a top-level `disabledServers` naming every server still
 #   spawned its children). OMP-native config and extensions stay on.
-# - `skills.customDirectories` re-adds the user's Claude skills through the
+# - `skills.customDirectories` re-adds the user's agent skills through the
 #   `custom` skills provider, which `disabledProviders: [claude]` does not
 #   touch. That is what keeps user skills working under lean. The stanza at
 #   the bottom is a commented example: uncomment it and point it at your
@@ -48,7 +49,9 @@ disabledProviders:
   - vscode
 # User skills back through the custom provider (commented example, not a
 # live default: the directory is per-machine — uncomment and point it at
-# your own Claude skills directory, e.g. ~/.claude/skills on this machine.
+# your own agent skills directory: $AGENT_CONFIG_HOME/skills
+# (~/.claude/skills before the root move — same root contract as agent-config
+# P2: $AGENT_CONFIG_HOME wins, else ~/agent-config, else ~/.claude).
 # Without it lean tabs start with zero MCP children but no user skills).
 # skills:
 #   customDirectories:
