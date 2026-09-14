@@ -292,6 +292,10 @@ THINKING=""
 MCP_FULL=""
 NO_GT=""
 OVERWRITE=""
+LAUNCH_ARGV=("$@")
+# Retry guard (agent-config#696): the first-turn-abort check below re-execs this
+# script once with OMP_TAB_ATTEMPT=2. Internal only, never a CLI flag.
+ATTEMPT="${OMP_TAB_ATTEMPT:-1}"
 while [ $# -gt 0 ]; do
   case "$1" in
     # `shift 2` with one parameter left FAILS (status 1) and leaves $# UNCHANGED,
@@ -751,6 +755,24 @@ MSG="$MSG Use absolute paths and 'git -C <dir> ...'; do NOT rely on 'cd' — on 
 # is the stronger signal anyway.
 "$SEND" --to "$WID" --text "$MSG" --quiet || note "arrival not confirmed by kitty-send; relying on the started-working gate"
 
+# First-turn abort (agent-config#696): on 2026-09-14 seven of nine tabs wrote an
+# 8-line session file with ZERO assistant turns and a model_usage row carrying
+# `"stopReason":"aborted"` / `"errorMessage":"Request was aborted"` ~5 s after
+# launch. A launch that wrote nothing on its first poll is a failed launch, not
+# a slow one — relaunch instead of polling a silent tab. Never fires on a
+# genuine provider rejection (a 402/balance line, or a model outside
+# allowedModels): those refuse before launch and say why.
+# Prints 0 when TAB_SESSION shows the abort signature (an aborted record, no
+# assistant row that did real work), else 1. An assistant row with empty
+# content and stopReason aborted is the abort itself, not a turn.
+first_turn_abort() {
+  [ -n "$TAB_SESSION" ] && [ -f "$TAB_SESSION" ] || return 1
+  grep -q '"stopReason":"aborted"' "$TAB_SESSION" 2>/dev/null || return 1
+  grep -q '"402\|Insufficient Balance\|insufficient_balance' "$TAB_SESSION" 2>/dev/null && return 1
+  grep -q '"role":"assistant".*"stopReason":"stop"' "$TAB_SESSION" 2>/dev/null && return 1
+  grep -q '"role":"assistant".*"stopReason":"toolUse"' "$TAB_SESSION" 2>/dev/null && return 1
+  return 0
+}
 # Prove the launch model from the tab's session file. modelRoles.default is
 # shared by every omp session and a /model action can rewrite it, so a launch
 # that trusts it can land anywhere: on 2026-09-13 a tab launched "as
@@ -771,16 +793,45 @@ close_proven_window() {
   kitty @ close-window --match "id:$WID" 2>/dev/null || true
   sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
 }
-TAB_SESSION=""; TAB_MODEL=""
-for _ in $(seq 1 8); do
+TAB_SESSION=""; TAB_MODEL=""; ABORTED=""
+for _ in $(seq 1 15); do
   _stout=$("$STATE_TAB" "$WID" 2>/dev/null || true)
   TAB_SESSION=$(printf '%s' "$_stout" | grep -o 'session=.*' | head -1 | sed 's/^session=//; s/ reason=.*$//')
   case "$TAB_SESSION" in ""|"none") TAB_SESSION="" ;;
-    *) TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null) ;;
+    *) if first_turn_abort; then ABORTED=1; break; fi
+       TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null) ;;
   esac
   [ -n "$TAB_MODEL" ] && break
   sleep 2
 done
+if [ "$ABORTED" = 1 ]; then
+  TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null)
+  if [ -n "$TAB_MODEL" ] && [ "$TAB_MODEL" != "$EFFECTIVE" ]; then
+    printf 'WINDOW_ID=%s\n' "$WID"
+    close_proven_window
+    die "tab is running model $TAB_MODEL (first model_change row in $TAB_SESSION) but was launched as $EFFECTIVE. The brief had been sent; the window was closed at once." 3
+  fi
+  if [ -n "$TAB_MODEL" ] && [ "$(tbl has_allowed)" = yes ]; then
+    _hit=0
+    while IFS= read -r _allow; do
+      [ -n "$_allow" ] || continue
+      [ "$_allow" = "$TAB_MODEL" ] && _hit=1
+    done < <(tbl allowed)
+    if [ "$_hit" != 1 ]; then
+      printf 'WINDOW_ID=%s\n' "$WID"
+      close_proven_window
+      die "tab is running model $TAB_MODEL, outside allowedModels in $PROVIDERS_JSON. The brief had been sent; the window was closed at once." 3
+    fi
+  fi
+  if [ "$ATTEMPT" = 1 ]; then
+    note "retry 2/2 after first-turn abort"
+    close_proven_window
+    OMP_TAB_ATTEMPT=2 exec "$0" "${LAUNCH_ARGV[@]}"
+  fi
+  printf 'WINDOW_ID=%s\n' "$WID"
+  close_proven_window
+  die "first-turn abort on both attempts: window $WID wrote an aborted record with no assistant turn. Relaunch by hand." 3
+fi
 if [ -z "$TAB_MODEL" ]; then
   printf 'WINDOW_ID=%s\n' "$WID"
   close_proven_window

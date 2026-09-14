@@ -964,3 +964,87 @@ test('a missing session file closes the window with exit 3', async () => {
   assert.match(await closedArgs(), /991001/, 'the unproven window was closed');
   assert.equal(await wasSent(), true, 'the proof runs after the brief is sent (omp writes the file then)');
 });
+
+// ---- first-turn abort: retry once, then report ----
+//
+// On 2026-09-14 seven of nine tabs wrote a session file with an aborted
+// model_usage record and no assistant turn that did work. The launcher
+// retries once with the same argv, prints which attempt succeeded, and on a
+// second abort exits 3 with the window id. A 402/balance rejection never
+// reaches this path: it refuses before launch.
+const writeAbortSession = async (dir) => {
+  const now = new Date().toISOString();
+  const sess = path.join(dir, 'tab.jsonl');
+  await fs.writeFile(
+    sess,
+    `{"type":"session","version":3,"id":"01abort","timestamp":"${now}","cwd":"/tmp/omptab-cwd"}\n` +
+      `{"type":"model_change","id":"m1","parentId":null,"timestamp":"${now}","model":"opencode-go/muse-spark-1.3-contributor","resolvedModelIsFallback":false}\n` +
+      `{"type":"model_usage","id":"u0","timestamp":"${now}","purpose":"auto-thinking","stopReason":"aborted","errorMessage":"Request was aborted"}\n` +
+      `{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"brief"}],"timestamp":${Date.now()}}}\n` +
+      `{"type":"message","id":"a1","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request was aborted","timestamp":${Date.now()}}}\n`,
+  );
+  await fs.writeFile(path.join(dir, `pts-${LINK_PTS}`), `/tmp/omptab-cwd\n${sess}\n`);
+  return sess;
+};
+
+test('a first-turn abort retries once and reports the second failure with the window id', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const dir = await fs.mkdtemp(path.join(stateDir, 'sess-abort-'));
+  await writeAbortSession(dir);
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, OMP_TAB_STATE_DIR: dir, OMP_TAB_STATE_PTS_N: LINK_PTS });
+  assert.equal(r.code, 3, `${r.out}${r.err}`);
+  assert.match(r.err, /retry 2\/2 after first-turn abort/, 'the retry line names the attempt');
+  assert.match(r.err, /first-turn abort on both attempts/, 'the second failure is reported, not silent');
+  assert.match(r.out + r.err, /WINDOW_ID=991001/, 'exit 3 still prints the window id');
+  assert.match(await closedArgs(), /991001/, 'the aborted window was closed');
+});
+
+test('a healthy session never prints the retry line', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const st = await mkSessionEnv('opencode-go/muse-spark-1.3-contributor');
+  const userRow = `{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"steer"}],"timestamp":${Date.now()}}}\n`;
+  const append = new Promise((res, rej) => setTimeout(() => fs.appendFile(st.sess, userRow).then(res, rej), 1000));
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, ...st.env });
+  await append;
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.doesNotMatch(r.err, /retry 2\/2/, 'no retry on a working launch');
+});
+
+test('a first-turn abort that heals on retry confirms the second launch', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const dir = await fs.mkdtemp(path.join(stateDir, 'sess-heal-'));
+  const sess = await writeAbortSession(dir);
+  // The re-exec inherits OMP_TAB_STATE_DIR, so attempt 2 reads this same
+  // file: heal it the moment attempt 1 closes the dead window (close-args
+  // appears), rewriting the abort rows as a healthy idle session. Each
+  // model-proof poll iteration spawns subprocesses (~50 ms), so a 20 ms
+  // watch lands the heal before attempt 2's first read.
+  const now = new Date().toISOString();
+  const healed =
+    `{"type":"session","version":3,"id":"01abort","timestamp":"${now}","cwd":"/tmp/omptab-cwd"}\n` +
+    `{"type":"model_change","id":"m1","parentId":null,"timestamp":"${now}","model":"opencode-go/muse-spark-1.3-contributor","resolvedModelIsFallback":false}\n` +
+    `{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop","timestamp":${Date.now()}}}\n`;
+  let healedFlag = false;
+  const timer = setInterval(async () => {
+    if (healedFlag) return;
+    const closed = await fs.access(path.join(stateDir, 'close-args')).then(() => true, () => false);
+    if (closed) {
+      healedFlag = true;
+      await fs.writeFile(sess, healed);
+      const userRow = `{"type":"message","id":"u2","message":{"role":"user","content":[{"type":"text","text":"steer"}],"timestamp":${Date.now()}}}\n`;
+      setTimeout(() => fs.appendFile(sess, userRow).catch(() => {}), 800);
+    }
+  }, 20);
+  try {
+    const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, OMP_TAB_STATE_DIR: dir, OMP_TAB_STATE_PTS_N: LINK_PTS });
+    assert.equal(healedFlag, true, 'attempt 1 saw the abort and closed the window');
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.err, /retry 2\/2 after first-turn abort/, 'the retry line names the attempt');
+    assert.match(r.err, /confirmed running/, 'the second launch confirmed');
+  } finally {
+    clearInterval(timer);
+  }
+});
