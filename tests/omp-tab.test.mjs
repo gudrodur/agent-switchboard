@@ -207,6 +207,12 @@ after(async () => {
 const reset = async (screen) => {
   for (const f of ['sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'omp-env', 'balance.json', 'closed', 'close-args'])
     await fs.rm(path.join(stateDir, f), { force: true });
+  // The launch state file is per-uid and append-only, and the kitty stub serves
+  // ONE window id that never disappears — so without this a row written by an
+  // earlier test reads as another seat's LIVE tab to the one-slot gate (#699)
+  // and blocks every later launch. In production the row goes when the window
+  // closes; here each test starts from "no tabs live" and seeds its own rows.
+  await fs.writeFile(path.join(stateDir, `omp-tab-launched.${process.getuid()}`), '');
   await fs.writeFile(path.join(stateDir, 'screen'), screen);
   // A test that appended rows to the shared link leaves it dirty for the
   // next; rewrite the idle default every reset.
@@ -1047,4 +1053,73 @@ test('a first-turn abort that heals on retry confirms the second launch', async 
   } finally {
     clearInterval(timer);
   }
+});
+
+// ---- --slot-override and the one-slot gate (#699) ----
+//
+// One package tab per box, shared by every session. As a paragraph the rule was
+// broken the day it was sent: on 2026-09-14 window 67 launched while another
+// seat's window 66 was live, two minutes after a --list read. So it is a gate,
+// and the slot frees when a tab CLOSES rather than when it idles — which is why
+// these cases are about LIVENESS (kitty's id list plus an unchanged pid), not
+// about what any state file says.
+
+const slotStateFile = () => path.join(stateDir, `omp-tab-launched.${process.getuid()}`);
+const writeRows = async (...rows) => {
+  await fs.writeFile(slotStateFile(), rows.length ? `${rows.join('\n')}\n` : '');
+};
+
+test('another seat holding a live tab refuses the launch and names the holder', async () => {
+  await reset(NEW_TUI);
+  await writeRows(`${WID} ${process.pid} @other-seat omp: their package`);
+  const r = await runScript(baseArgs('brief-gt.md'));
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /another seat holds the package-tab slot/);
+  assert.match(r.err, new RegExp(WID), 'the live window id is named');
+  assert.match(r.err, /launcher other-seat/);
+  assert.match(r.err, /--slot-override/);
+  assert.equal(await launched(), false, 'a refused slot launches nothing');
+});
+
+test('a row THIS launcher wrote is not a holder', async () => {
+  await reset(NEW_TUI);
+  await writeRows(`${WID} ${process.pid} @seatA omp: my own earlier tab`);
+  const r = await runScript(baseArgs('brief-gt.md'), { KITTY_WINDOW_ID: 'seatA' });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.equal(await launched(), true);
+});
+
+test('a gone window and a reused id both free the slot', async () => {
+  await reset(NEW_TUI);
+  // 424242 is absent from the kitty stub's listing: gone.
+  await writeRows('424242 999 @other-seat omp: dead row');
+  const gone = await runScript(baseArgs('brief-gt.md'));
+  assert.equal(gone.code, 0, `${gone.out}${gone.err}`);
+  assert.equal(await launched(), true);
+
+  await reset(NEW_TUI);
+  // The live id belongs to a different pid now: kitty reused the id, so the
+  // row describes a stranger's window and is not a holder.
+  await writeRows(`${WID} 999999 @other-seat omp: id reused`);
+  const reused = await runScript(baseArgs('brief-gt.md'));
+  assert.equal(reused.code, 0, `${reused.out}${reused.err}`);
+  assert.equal(await launched(), true);
+});
+
+test('--slot-override with a reason launches and says why', async () => {
+  await reset(NEW_TUI);
+  await writeRows(`${WID} ${process.pid} @other-seat omp: their package`);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--slot-override', 'the box is idle and they are mid-read']);
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /slot override: the box is idle and they are mid-read/);
+  assert.equal(await launched(), true);
+});
+
+test('--slot-override without a reason is refused', async () => {
+  await reset(NEW_TUI);
+  await writeRows();
+  const r = await runScript([...baseArgs('brief-gt.md'), '--slot-override']);
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /--slot-override needs a reason/);
+  assert.equal(await launched(), false);
 });

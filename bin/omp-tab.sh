@@ -8,7 +8,7 @@
 #              [--out /abs/out.md] [--overwrite] [--cwd /abs/repo] \
 #              [--profile NAME | --no-profile] [--model PROVIDER/NAME] [--fallback]
 #              [--tools a,b,c] [--thinking low|medium|high|…]
-#              [--no-ground-truth] [--mcp full]
+#              [--no-ground-truth] [--mcp full] [--slot-override "<reason>"]
 #   omp-tab.sh --close <window-id>
 #   omp-tab.sh --list
 #   omp-tab.sh --help | -h
@@ -292,6 +292,7 @@ THINKING=""
 MCP_FULL=""
 NO_GT=""
 OVERWRITE=""
+SLOT_OVERRIDE=""
 LAUNCH_ARGV=("$@")
 # Retry guard (agent-config#696): the first-turn-abort check below re-execs this
 # script once with OMP_TAB_ATTEMPT=2. Internal only, never a CLI flag.
@@ -317,6 +318,7 @@ while [ $# -gt 0 ]; do
     --overwrite) OVERWRITE=1; shift ;;
     --help|-h) print_help; exit 0 ;;
     --no-ground-truth) NO_GT=1; shift ;;
+    --slot-override) SLOT_OVERRIDE="${2:-}"; [ -n "$SLOT_OVERRIDE" ] || die "--slot-override needs a reason (it is printed on launch, so the overlap is visible to the other seat)" ; shift 2 || die "--slot-override needs a value" ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -644,6 +646,58 @@ OMP_ARGS=""
 [ -n "$MODEL" ] && OMP_ARGS="$OMP_ARGS --model $MODEL"
 [ -n "$TOOLS" ] && OMP_ARGS="$OMP_ARGS --tools $TOOLS"
 [ -n "$THINKING" ] && OMP_ARGS="$OMP_ARGS --thinking $THINKING"
+# Who launched this: the state file is per-uid, so without this every row reads
+# as "what THIS script launched" while belonging to any session on the machine
+# (measured once: 8 dead rows plus 2 live tabs of the other session). Prefer the
+# session id where the environment carries one (the host agent sets
+# CLAUDE_SESSION_ID — env name owned by the runtime, not renamed here; measured
+# 2026-09-09: absent in this harness, so checked, not assumed); otherwise the
+# kitty window the launcher ran in (KITTY_WINDOW_ID — always set inside a kitty
+# window). One token: the file is space-separated, one row per line.
+LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"
+LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
+[ -n "$LAUNCHER" ] || LAUNCHER=unknown
+
+# ── the one-slot gate (#699) ────────────────────────────────────────────────
+# One package tab per box, shared by every session. As a paragraph this was
+# broken the day it was sent: on 2026-09-14 window 67 launched while another
+# seat's window 66 was live, two minutes after a `--list` read, and the seat's
+# own retro recorded it. So it is a gate now.
+#
+# The slot frees when a tab CLOSES, not when it goes idle: liveness is kitty's
+# id list plus an unchanged pid — the same test `--list` uses — because a kitty
+# id can be REUSED by a new instance and a swapped pid means a stranger owns it.
+# A row this launcher wrote is not a holder: our own tabs are the point.
+slot_holders() {
+  [ -s "$STATE" ] || return 0
+  live_ids=$(kitty @ ls 2>/dev/null | jq -r '.[].tabs[].windows[].id' 2>/dev/null | tr '\n' ' ')
+  set -f
+  while IFS= read -r row; do
+    # shellcheck disable=SC2086: unquoted split is the parse; globbing off via set -f.
+    set -- $row
+    row_id=${1:-}
+    case "${3:-}" in @*) row_launcher=${3#@} ;; *) row_launcher=unknown ;; esac
+    case " $live_ids " in *" $row_id "*) ;; *) continue ;; esac
+    [ "$(win_pid "$row_id")" = "${2:-}" ] || continue
+    [ "$row_launcher" = "$LAUNCHER" ] && continue
+    printf '%s (launcher %s)' "$row_id" "$row_launcher"
+  done < "$STATE"
+  set +f
+}
+
+if [ -z "$SLOT_OVERRIDE" ]; then
+  holders=$(slot_holders)
+  if [ -n "$holders" ]; then
+    die "another seat holds the package-tab slot (#699) — nothing launched.
+        live tab(s): ${holders//$'\n'/; }
+        One package tab per box; the slot frees when that tab CLOSES, not when it idles.
+        Re-run with --slot-override \"<reason>\" only when the overlap is deliberate.
+        The reason is printed on launch so the other seat can see it."
+  fi
+else
+  note "slot override: $SLOT_OVERRIDE (another seat may hold the slot)"
+fi
+
 WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" \
         bash -lc "${KEY_PREFIX}exec omp $OMP_ARGS" 2>/dev/null)
 # Shape, not just emptiness: anything extra on stdout would become a second
@@ -652,18 +706,7 @@ case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id
 
 WPID=$(win_pid "$WID")
 [ -n "$WPID" ] || die "window $WID exited immediately after launch — check KEY_COMMAND output by hand" 3
-# Who launched it: the state file is per-uid, so without this every row reads
-# as "what THIS script launched" while belonging to any session on the machine
-# (measured once: 8 dead rows plus 2 live tabs of the other session). Prefer
-# the session id where the environment carries one (the host agent sets
-# CLAUDE_SESSION_ID — env name owned by the runtime, not renamed here;
-# measured 2026-09-09: absent in this harness, so checked, not assumed);
-# otherwise the kitty window the launcher ran in (KITTY_WINDOW_ID
-# — always set inside a kitty window). One token: the file is space-separated, one row per line.
 # --close is untouched: it matches on the id and refuses strangers as before.
-LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"
-LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
-[ -n "$LAUNCHER" ] || LAUNCHER=unknown
 printf '%s %s @%s %s\n' "$WID" "$WPID" "$LAUNCHER" "$TITLE" >> "$STATE"
 note "launched window $WID (pid $WPID) — $TITLE"
 
