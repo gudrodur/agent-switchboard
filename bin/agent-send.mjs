@@ -76,9 +76,11 @@ const usage = () => `Usage:
                 written for you" and reads whatever is on disk whenever the
                 message reaches it. An ack proves the row was queued and taken,
                 never that the file is still readable — a sender that deletes its
-                scratch file after the ack delivers a dangling pointer. So pass
-                the content with --text, or leave the file in place until the
-                recipient confirms it has the message.
+                scratch file after the ack delivers a dangling pointer. For a
+                short message, --text carries it inline, but --text is ONE line
+                (an embedded newline submits a truncated first line — which is
+                why --file exists at all). For anything longer, leave the file in
+                place until the recipient confirms it has the message.
 
   Exit: 0 acked, or delivered and proven by kitty-send; 3 not delivered yet and
   do not resend: the row is queued in the mailbox for the consumer, or kitty-send
