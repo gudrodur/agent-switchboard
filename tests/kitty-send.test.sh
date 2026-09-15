@@ -156,7 +156,7 @@ W1=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitt
 WINDOWS+=("$W1")
 sleep 1
 OUT=$("$SEND" --to "$W1" --text "$MSG" --timeout 8 2>&1); RC=$?
-check "idle target confirms, and says the text echoed" 0 "echoed at the prompt" "$RC" "$OUT"
+check "idle target is typed, not proven submitted" 10 "typed, not proven submitted" "$RC" "$OUT"
 # 2. BUSY TARGET — mid-turn, so the send lands in the steering queue, which
 #    renders the message HEAD-first and elided. The head appears only AFTER the
 #    send; the fixture never shows the tail, so only the head match can fire.
@@ -164,7 +164,7 @@ check "idle target confirms, and says the text echoed" 0 "echoed at the prompt" 
 W2=$(launch_busy); WINDOWS+=("$W2")
 sleep 1
 OUT=$("$SEND" --to "$W2" --text "$MSG" --timeout 8 2>&1); RC=$?
-check "busy target confirms from the elided head" 0 "queued as steering" "$RC" "$OUT"
+check "busy target is typed, not proven submitted" 10 "typed, not proven submitted" "$RC" "$OUT"
 
 # 3. NEGATIVE CONTROL — a window that renders an UNRELATED elided line must NOT
 #    confirm. Without this, a guard that returned 0 unconditionally would pass
@@ -254,7 +254,7 @@ W8=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" \
 WINDOWS+=("$W8")
 sleep 1
 OUT=$("$SEND" --to "$W8" --text "$MSG" --timeout 8 --wait-idle 20 2>&1); RC=$?
-check "--wait-idle sends once the title spinner clears" 0 "went idle after" "$RC" "$OUT"
+check "--wait-idle sends once the title spinner clears" 10 "went idle after" "$RC" "$OUT"
 
 # 9. --wait-idle RUNS OUT — sends NOTHING, exit 5. The fixture keeps the spinner
 #    for longer than the wait; `cat` would echo anything that slipped through.
@@ -283,9 +283,9 @@ W10=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kit
 WINDOWS+=("$W10")
 sleep 1
 OUT=$("$SEND" --to "$W10" --file "$NOTE_A" --timeout 8 2>&1); RC=$?
-check "first --file note confirms" 0 "delivered" "$RC" "$OUT"
+check "first --file note is typed, not proven submitted" 10 "typed, not proven submitted" "$RC" "$OUT"
 OUT=$("$SEND" --to "$W10" --file "$NOTE_B" --timeout 8 2>&1); RC=$?
-check "second --file note (different file) confirms" 0 "delivered" "$RC" "$OUT"
+check "second --file note (different file) is typed, not proven submitted" 10 "typed, not proven submitted" "$RC" "$OUT"
 OUT=$("$SEND" --to "$W10" --file "$NOTE_B" --timeout 4 2>&1); RC=$?
 check "same --file note sent twice stays unconfirmed" 3 "could not observe" "$RC" "$OUT"
 rm -f "$NOTE_A" "$NOTE_B"
@@ -308,8 +308,8 @@ else
   echo "  FAIL  --queue blocked for $((t1 - t0))s"; fail=$((fail+1))
 fi
 LOG11=$(printf '%s' "$OUT" | grep -o 'log [^)]*' | head -1 | cut -d' ' -f2)
-for _ in $(seq 1 20); do grep -qE 'delivered|could not observe|nothing was sent' "$LOG11" 2>/dev/null && break; sleep 1; done
-check "the queued send delivered once the target went idle" 0 "delivered" 0 "$(cat "$LOG11" 2>/dev/null)"
+for _ in $(seq 1 20); do grep -qE 'typed, not proven submitted|could not observe|nothing was sent' "$LOG11" 2>/dev/null && break; sleep 1; done
+check "the queued send is typed once the target went idle" 0 "typed, not proven submitted" 0 "$(cat "$LOG11" 2>/dev/null)"
 if kitty @ get-text --match "id:$W11" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | tail -c 40 | tr -d '[:space:]')"; then
   echo "  PASS  the queued message is on the window's screen"; pass=$((pass+1))
 else
@@ -365,8 +365,8 @@ fi
 #     still busy; the echo is the proof it went out. --now with --wait-idle or
 #     --queue is a usage error, because the two halves contradict each other.
 OUT=$("$SEND" --to "$W13" --text "$MSG" --timeout 8 --now 2>&1); RC=$?
-check "--now sends into a mid-turn target" 0 "delivered" "$RC" "$OUT"
-check "--now says the in-flight result is discarded" 0 "DISCARDED" "$RC" "$OUT"
+check "--now sends into a mid-turn target, typed not proven" 10 "typed, not proven submitted" "$RC" "$OUT"
+check "--now says the in-flight result is discarded" 10 "DISCARDED" "$RC" "$OUT"
 OUT=$("$SEND" --to "$W13" --text "$MSG" --timeout 4 --now --wait-idle 5 2>&1); RC=$?
 check "--now with --wait-idle is a usage error" 1 "mutually exclusive" "$RC" "$OUT"
 OUT=$("$SEND" --to "$W13" --text "$MSG" --timeout 4 --now --queue 2>&1); RC=$?
@@ -406,7 +406,7 @@ W16=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kit
 WINDOWS+=("$W16")
 sleep 1
 OUT=$("$SEND" --to "$W16" --text "$MSG" --timeout 10 2>&1); RC=$?
-check "unsubmitted chip after the send clears on Enter and confirms" 0 "delivered" "$RC" "$OUT"
+check "unsubmitted chip after the send clears on Enter, typed not proven" 10 "typed, not proven submitted" "$RC" "$OUT"
 if kitty @ get-text --match "id:$W16" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "[Pastedtext#"; then
   echo "  FAIL  unsubmitted chip still on screen after a confirmed send"; fail=$((fail+1))
 else
@@ -446,8 +446,8 @@ P18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] |
 C18=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W18" '.[].tabs[].windows[] | select(.id == $id) | .created_at // empty')
 printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$P18" "$C18" "$(date +%s)" "1 " > "$T18/kitty-send-stranded/stranded-$W18"
 OUT=$(XDG_RUNTIME_DIR="$T18" "$SEND" --to "$W18" --text "$MSG" --timeout 10 2>&1); RC=$?
-check "unsubmitted chip before the send with own record recovers and sends" 0 "delivered" "$RC" "$OUT"
-check "the recovery says a stranded earlier message was recovered" 0 "a stranded earlier message was recovered" "$RC" "$OUT"
+check "unsubmitted chip before the send with own record recovers, typed not proven" 10 "typed, not proven submitted" "$RC" "$OUT"
+check "the recovery says a stranded earlier message was recovered" 10 "a stranded earlier message was recovered" "$RC" "$OUT"
 if [ ! -f "$T18/kitty-send-stranded/stranded-$W18" ]; then
   echo "  PASS  unsubmitted chip record dropped after recovery"; pass=$((pass+1))
 else

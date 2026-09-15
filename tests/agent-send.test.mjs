@@ -256,7 +256,6 @@ test('the real-rules stub measures kitty-send: it refuses --now with --deadline 
   const accepted = spawnSync(realRulesStub, ['--to', '1', '--text', 'x', '--now'], { encoding: 'utf-8' });
   assert.equal(accepted.status, 0, accepted.stderr);
 });
-
 test('no ack in the wait window withdraws the row and falls through to kitty-send', async () => {
   fs.rmSync(fallbackArgv, { force: true });
   fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
@@ -272,6 +271,24 @@ test('no ack in the wait window withdraws the row and falls through to kitty-sen
   assert.ok(argv.includes('--to') && argv.includes('991001'));
   // The withdrawn mailbox copy must not deliver later on top of the kitty copy.
   assert.deepEqual(readUnacked(KEY_S1, { dir: mboxDir }), []);
+});
+
+test('an idle recipient caps the ack wait instead of blocking the full default (row 58)', async () => {
+  fs.rmSync(fallbackArgv, { force: true });
+  fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
+  const t0 = Date.now();
+  const { code, stderr } = await runSend(
+    ['--to', '991001', '--text', 'parked steer'],
+    childEnv({ CLAUDE_CODE_SESSION_ID: 's2', AGENT_SEND_KITTY_SEND: realRulesStub, KITTY_SEND_STUB_EXIT: '10' }),
+  );
+  const elapsed = Date.now() - t0;
+  // The kitty stub reports an idle title, so the 120 s default caps at 5 s;
+  // exit 10 (typed, not proven submitted) passes through, never re-queued.
+  assert.equal(code, 10, stderr);
+  assert.match(stderr, /ack wait capped at 5s/);
+  assert.match(stderr, /kitty-send exit 10 for 991001: typed, not proven submitted/);
+  assert.ok(elapsed < 30_000, `idle recipient must not wait the full default (took ${elapsed}ms)`);
+  assert.deepEqual(readUnacked(KEY_S1, { dir: mboxDir }), [], 'a typed message must not be queued a second time');
 });
 
 // First path, the quoted moment: `--to 39 --now --deadline 60` withdrew the
