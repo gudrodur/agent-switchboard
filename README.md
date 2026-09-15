@@ -92,7 +92,7 @@ omp-tab.sh --close <window-id>
 omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]
 ```
 
-`--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A launch checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key: the serve probe is itself a session-less run, executed with no window id and throwaway store paths, so it leaves no beacon or state behind.
+`--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A launch checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key: the serve probe is itself a session-less run, executed with no window id and throwaway store paths, so it leaves no beacon or state behind. A launch whose new tab writes an aborted record with no assistant turn that did work (first-turn abort, agent-config#696) is retried once automatically; a second abort exits 3 with the window id.
 
 ```sh
 export OMP_TAB_KEY_COMMAND='...'   # stdout emits the export line the tab evals before exec
