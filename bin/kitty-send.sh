@@ -19,11 +19,11 @@
 # exactly that way, and eight single-case fixes each closed one shape while
 # the class recurred. The echo proof below (tail or head fragment newly on
 # screen) runs only when the window has no session file to read — not an
-# omp tab, or the pty link is unproven — and its verdict says it is the
-# weaker proof.
+# omp tab, or the pty link is unproven — and its verdict is exit 10
+# ("typed, not proven submitted"), never "delivered".
 # Exit codes:
-#   0  sent AND proven: a new role:user row in the tab's session file, or
-#      (windows with no session file) the text newly observed on screen
+#   0  sent AND proven: a new role:user row in the tab's session file
+#      (the only proof that names the tab receiving the text)
 #   1  usage / precondition error (no kitty remote control, no such window)
 #   3  could not prove it landed — sent but unconfirmed, or the screen could
 #      not be read to attempt the proof (nothing is retried for you)
@@ -39,6 +39,14 @@
 #   9  the target's composer already holds an unsubmitted paste chip that is
 #      NOT kitty-send's own leftover — NOTHING WAS SENT (it may be a human's
 #      draft; the message prints the recovery command)
+#   10 typed, not proven submitted: the window has no session file to read,
+#      so the only proof is the screen. The text reached the window (it
+#      echoed, or the screen changed on it) but nothing proves the target
+#      submitted it — a composer echoes unsubmitted text too (measured
+#      2026-09-15, agent-config#638 row 57: a Claude Code composer held the
+#      burst as a paste chip while the echo proof said "delivered"). Never
+#      "delivered", and never resend blind: the text may already sit in the
+#      composer.
 #
 # A composer echo is NOT delivery. The host agent's
 # composer collapses a send-text burst into a `[Pasted text #N +M lines]` chip
@@ -838,8 +846,16 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 
 if [ "$confirmed" = 1 ]; then
-  note "delivered to window $WID — ${where:-observed on screen}"
-  exit 0
+  if [ "$STATE_KNOWN" = 1 ]; then
+    note "delivered to window $WID — ${where:-observed on screen}"
+    exit 0
+  fi
+  # No session file: the screen is the only proof, and a composer echoes
+  # unsubmitted text too — typed, not proven submitted, never "delivered"
+  # (agent-config#638 row 57). Like every unproven send this must never
+  # invite a resend: the text may already sit in the composer.
+  note "typed, not proven submitted in window $WID — ${where:-observed on screen} (no session file to read: nothing proves the target submitted it; look at the window before resending)"
+  exit 10
 fi
 # A chip survived the send (and the one Enter): the message reached the text
 # box but was never submitted, so this is exit 3 with the chip named — not a

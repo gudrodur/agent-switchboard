@@ -94,10 +94,11 @@ const runScript = async (args, extraEnv = {}) => {
   }
 };
 
-test('a slash command whose effect replaced its echo is confirmed by the changed screen', async () => {
+test('a slash command whose effect replaced its echo is typed, not proven submitted', async () => {
   await reset();
   const r = await runScript(['--to', WID, '--text', '/mcp reauth Neon', '--timeout', '5']);
-  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.equal(r.code, 10, `${r.out}${r.err}`);
+  assert.match(r.err, /typed, not proven submitted/);
   assert.match(r.err, /screen changed after the send/);
 });
 
@@ -120,10 +121,11 @@ test('a plain message is NOT confirmed by a changed screen alone', async () => {
   assert.equal(r.code, 3, `${r.out}${r.err}`);
 });
 
-test('a plain message whose fragment newly appears still confirms', async () => {
+test('a plain message whose fragment newly appears is typed, not proven submitted (no session file)', async () => {
   await reset('agent replies, having received: plain note without a slash\n');
   const r = await runScript(['--to', WID, '--text', 'plain note without a slash', '--timeout', '5']);
-  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.equal(r.code, 10, `${r.out}${r.err}`);
+  assert.match(r.err, /typed, not proven submitted/);
   assert.match(r.err, /echoed at the prompt|queued as steering/);
 });
 
@@ -147,12 +149,11 @@ test('an unknown argument names itself and points at --help', async () => {
   assert.match(r.err, /unknown argument: --bogus/);
   assert.match(r.err, /try --help/);
 });
-
-test('a bare window id works as --to', async () => {
+test('a bare window id works as --to, typed not proven without a session file', async () => {
   await reset('agent replies, having received: bare id note\n');
   const r = await runScript([WID, '--text', 'bare id note', '--timeout', '5']);
-  assert.equal(r.code, 0, `${r.out}${r.err}`);
-  assert.match(r.err, /delivered to window 991001/);
+  assert.equal(r.code, 10, `${r.out}${r.err}`);
+  assert.match(r.err, /typed, not proven submitted in window 991001/);
 });
 
 test('a bare non-id first argument stays an error', async () => {
@@ -170,12 +171,12 @@ test('a bare non-id first argument stays an error', async () => {
 // after payload shares no fragment with the message, and the title flips
 // idle -> busy at the send.
 
-test('an idle target that starts working after the send confirms with the weaker proof', async () => {
+test('an idle target that starts working after the send is typed, not proven submitted', async () => {
   await reset('agent is now working: tool calls streaming, prompt echo scrolled away\n', { busyAfter: true });
   const r = await runScript(['--to', WID, '--text', 'plain note without a slash', '--timeout', '5']);
-  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.equal(r.code, 10, `${r.out}${r.err}`);
+  assert.match(r.err, /typed, not proven submitted/);
   assert.match(r.err, /started working after the send/);
-  assert.match(r.err, /weaker proof/);
 });
 
 test('busy-after with an unchanged screen stays exit 3', async () => {

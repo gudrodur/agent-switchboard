@@ -38,7 +38,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   ack,
@@ -74,7 +74,10 @@ const usage = () => `Usage:
 
   Exit: 0 acked, or delivered and proven by kitty-send; 3 not delivered yet and
   do not resend: the row is queued in the mailbox for the consumer, or kitty-send
-  sent it and could not prove it; any other code is kitty-send.sh's own.
+  sent it and could not prove it; 10 typed but not proven submitted
+  (kitty-send reached the window but no session row proves submission — look
+  at the window before resending, never resend blind); any other code is
+  kitty-send.sh's own.
 `;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -92,6 +95,9 @@ const KITTY_NOTHING_REASON = {
   7: 'mid-turn without --now/--queue/--wait-idle',
   9: 'composer holds unsubmitted text',
 };
+// Exit 10 is typed-but-unproven (row 57): the text reached the window but no
+// session row proves the target submitted it — NOT re-queued (the composer
+// may already hold it; a mailbox re-delivery would double-deliver).
 
 // Where a queued kitty-send's delivery verdict lands. Numeric window targets
 // only; mirrors kitty-send.sh's QUEUE_DIR default. A fallback can exit 0
@@ -192,12 +198,20 @@ const main = (argv) => {
   if (text == null || text === '') die('pass --text LINE or --file /abs/path');
   if (deadline != null && !/^\d+$/.test(deadline)) die('--deadline must be a number of seconds');
   const priority = mode ?? 'now';
-  // Default ack wait: 120 s. A busy mailbox consumer acks only at its next
-  // tool boundary, and on a missed deadline this falls back to kitty-send,
-  // which under --now types into the busy tab and discards the tool result
-  // it was waiting for. A parked tab acks within seconds and a window with no
-  // consumer falls back at once, so only a busy target ever waits this long.
-  const deadlineMs = deadline != null ? Number(deadline) * 1000 : priority === 'queue' ? null : 120_000;
+  // Default ack wait: 120 s for a recipient that can ack while idle (an omp
+  // tab's idle poll acks within seconds; a busy consumer acks at its next
+  // tool boundary). A Claude Code consumer drains its mailbox only on
+  // UserPromptSubmit, so an idle Claude Code recipient can NEVER ack: waiting
+  // the full 120 s before the kitty fallback is pure latency (measured
+  // 2026-09-15, agent-config#638 row 58: the send blocked the whole default
+  // before falling back to a kitty-send that then could not submit either).
+  // The wait therefore follows the recipient's runtime, detected AFTER
+  // resolveRecipient (below): a Claude Code recipient that is idle falls back
+  // at once (AGENT_SEND_CLAUDE_IDLE_WAIT_S, default 5 s, so one late-arriving
+  // ack still lands), a busy one keeps 120 s, and an explicit --deadline
+  // always wins. --queue stays unbounded unless --deadline caps it.
+  const defaultWaitMs = priority === 'queue' ? null : 120_000;
+  let deadlineMs = deadline != null ? Number(deadline) * 1000 : defaultWaitMs;
 
   pruneStale({});
 
@@ -227,6 +241,12 @@ const main = (argv) => {
     if (mode === 'now' || mode === 'stop') args.push('--now');
     else if (deadline != null) args.push('--deadline', deadline);
     const r = spawnSync(kittySend(), args, { stdio: 'inherit' });
+    // kitty-send exit 10: typed but not proven submitted — reached the
+    // window, but no session row proves the target submitted it. Passes
+    // through (NOT re-queued: the composer may already hold it).
+    if (r.status === 10) {
+      process.stderr.write(`agent-send: kitty-send exit 10 for ${args[1]}: typed, not proven submitted (reached the window, no session row proves submission); look at the window before resending, never resend blind\n`);
+    }
     // kitty-send exit 8: sent under --now while mid-turn and still mid-turn at
     // the deadline — pending in the target's steering queue until the tool
     // boundary, not lost. The ack row (mailbox path) or the session row (kitty
@@ -267,6 +287,34 @@ const main = (argv) => {
   const row = appendMessage({ to: recipient.key, from, priority, text });
   const mbox = mailboxPath(recipient.key);
   process.stderr.write(`agent-send: queued ${row.id} in ${mbox}\n`);
+  // Row 58: a Claude Code consumer drains its mailbox only on
+  // UserPromptSubmit, so an IDLE recipient cannot ack — waiting the full
+  // 120 s is pure latency before the kitty fallback (measured 2026-09-15,
+  // agent-config#638 row 58). An omp tab's idle poll acks within seconds,
+  // so capping the wait for an IDLE recipient is safe for both runtimes:
+  // idle (no spinner in the RECIPIENT window's title) caps at
+  // AGENT_SEND_IDLE_WAIT_S (default 5 s), busy keeps 120 s, and an explicit
+  // --deadline always wins. When the recipient window or its title cannot
+  // be read the wait stays 120 s. UNSURE: title-idle is a proxy — a Claude
+  // Code session busy in a tool call without a spinner keeps the short cap
+  // and falls back early; the re-read below still catches a late ack.
+  if (deadline == null && deadlineMs != null) {
+    const rwin = recipient.windowId ?? recipient.beaconWindowId ?? null;
+    if (rwin != null) {
+      let rIdle = false;
+      try {
+        const ls = execFileSync(process.env.AGENT_MAILBOX_KITTY ?? 'kitty', ['@', 'ls'], { encoding: 'utf-8', timeout: 5000 });
+        const wins = JSON.parse(ls).flatMap((t) => (t.tabs ?? []).flatMap((tab) => tab.windows ?? []));
+        const rec = wins.find((w) => w.id === Number(rwin));
+        rIdle = rec != null && !/[\u2800-\u28FF]/.test(rec.title ?? '');
+      } catch { rIdle = false; }
+      if (rIdle) {
+        const capS = Number(process.env.AGENT_SEND_IDLE_WAIT_S ?? 5);
+        deadlineMs = (Number.isFinite(capS) && capS >= 0 ? capS : 5) * 1000;
+        process.stderr.write(`agent-send: idle recipient ${to}: ack wait capped at ${deadlineMs / 1000}s (idle cannot ack promptly; busy keeps 120s)\n`);
+      }
+    }
+  }
   const ok = waitForAck({ key: recipient.key, id: row.id, deadlineMs });
   if (ok) {
     process.stderr.write(`agent-send: acked ${row.id} in ${mbox}\n`);
