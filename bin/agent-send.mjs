@@ -72,6 +72,14 @@ const usage = () => `Usage:
                 the session is CLAUDE_CODE_SESSION_ID unless --as names it)
   --cancel      withdraw one queued row so a later drain cannot deliver it
 
+  --file is a POINTER, not a payload: the recipient is sent "read <path>, a note
+                written for you" and reads whatever is on disk whenever the
+                message reaches it. An ack proves the row was queued and taken,
+                never that the file is still readable — a sender that deletes its
+                scratch file after the ack delivers a dangling pointer. So pass
+                the content with --text, or leave the file in place until the
+                recipient confirms it has the message.
+
   Exit: 0 acked, or delivered and proven by kitty-send; 3 not delivered yet and
   do not resend: the row is queued in the mailbox for the consumer, or kitty-send
   sent it and could not prove it; 10 typed but not proven submitted
