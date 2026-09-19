@@ -299,6 +299,42 @@ test('a brief with GROUND TRUTH still launches', async () => {
   assert.equal(await launched(), true);
 });
 
+// ---- the config gate: an audit that refuses the config refuses the launch ----
+//
+// The gate runs before a model is resolved, because the state it guards against
+// (a settings UI dropping `modelRoles.default`) otherwise surfaces as "no model"
+// rather than "the config lost a key". Its default path is $HOME-based and this
+// harness's HOME is a temp dir, so every other test here runs with the gate
+// skipped — which is itself the absent-audit behaviour. These two point it at a
+// stub with OMP_MODEL_AUDIT.
+
+test('an audit that refuses the config stops the launch and says so', async () => {
+  await reset(NEW_TUI);
+  // The gate runs the audit the way callers do — `node <path>` — so the stub must
+  // be a Node module. A shell-script stub would exit 1 on node's own syntax error
+  // and this test would pass for the wrong reason (measured: it did, first run).
+  const stub = path.join(stateDir, 'audit-refuse.mjs');
+  await fs.writeFile(
+    stub,
+    'console.error("✗ `modelRoles.default` is missing — a bare launch refuses in this state");\nprocess.exit(1);\n',
+  );
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_MODEL_AUDIT: stub });
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /config gate/, 'the refusal must name the gate');
+  assert.match(r.err, /modelRoles\.default/, "the audit's own reason must survive into the refusal");
+  assert.equal(await launched(), false, 'nothing is launched when the config is refused');
+});
+
+test('an audit that passes leaves the launch alone', async () => {
+  await reset(NEW_TUI);
+  const stub = path.join(stateDir, 'audit-ok.mjs');
+  await fs.writeFile(stub, 'process.exit(0);\n');
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_MODEL_AUDIT: stub });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /confirmed running/);
+  assert.equal(await launched(), true);
+});
+
 // ---- --tools is validated headless before any window opens ----
 //
 // The 2026-09-11 launch passed `--tools …,browser`, the window died in

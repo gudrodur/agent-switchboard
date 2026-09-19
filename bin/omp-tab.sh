@@ -526,6 +526,24 @@ fallback_walk() {
         Edit $PROVIDERS_JSON to add or re-enable one."
 }
 
+# ── config gate (agent-config#807 row 12) ───────────────────────────────────
+# On 2026-09-19 22:54Z the Advisor pane's write to the live config dropped
+# `modelRoles.default`, and every bare launch then refused with a message that
+# named the symptom (no model) and not the cause (a key a settings UI does not
+# manage). The audit already knows the pair's rules — the default is inside
+# allowedModels, retry targets are too — so run it here, before a model is
+# resolved: ~1 s, no network, and it refuses nothing that was going to work.
+# Absent audit means old behaviour, which is also how the test harness runs
+# (its HOME is a temp dir, so the default path does not exist).
+AUDIT="${OMP_MODEL_AUDIT:-$HOME/.claude/scripts/omp-model-audit.mjs}"
+if [ -f "$AUDIT" ]; then
+  if ! AUDIT_OUT="$(node "$AUDIT" 2>&1)"; then
+    die "config gate: $(printf '%s' "$AUDIT_OUT" | grep -E '✗|default|allowedModels' | head -3)
+        Nothing launched. $AUDIT refused the config/model pair; fix the config, or
+        point OMP_MODEL_AUDIT at a stub to bypass this deliberately."
+  fi
+fi
+
 if [ -n "$MODEL" ]; then
   EFFECTIVE="$MODEL"
   if preflight "$MODEL"; then
