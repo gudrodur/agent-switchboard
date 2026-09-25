@@ -71,6 +71,28 @@ note() { printf '%s\n' "omp-tab: $*" >&2; }
 
 kitty_up() { kitty @ ls >/dev/null 2>&1; }
 
+# ── brief claims (agent-config task-claim.mjs) ──────────────────────────────
+# Two seats on ONE brief is the race task claims exist for: on 2026-09-25
+# overseer windows 29 and 31 ran the same brief and 29 reset the tree under
+# 31. Every launch claims `brief:<basename>` in the --cwd repo for the new
+# window (owner kitty:<id>), a launch whose brief another LIVE window holds is
+# refused unless --slot-override, and --close releases the window's claims.
+# The claims live in agent-config's store, reached through its CLI; a missing
+# CLI is a loud skip, never a refusal. Test seam: OMP_TAB_TASK_CLAIM.
+config_root() {
+  if [ -n "${AGENT_CONFIG_HOME:-}" ]; then printf '%s' "$AGENT_CONFIG_HOME"
+  elif [ -d "$HOME/agent-config" ]; then printf '%s' "$HOME/agent-config"
+  else printf '%s' "$HOME/.claude"; fi
+}
+CLAIM_CLI="${OMP_TAB_TASK_CLAIM:-$(config_root)/scripts/task-claim.mjs}"
+claim_cli() {
+  if [ ! -r "$CLAIM_CLI" ]; then
+    note "task-claim CLI not found at $CLAIM_CLI — brief claims skipped"
+    return 0
+  fi
+  node "$CLAIM_CLI" "$@"
+}
+
 # WINDOW id -> its pid, empty if the window is gone.
 # `--match id:N` is AMBIGUOUS: kitty numbers tabs and windows in one space and
 # they overlap (measured 2026-08-28: tab ids 5,20 and window ids 5,20 on this
@@ -200,6 +222,7 @@ if [ "${1:-}" = "--close" ]; then
     note "close-window FAILED for $2 — the window may still be open; go look"
   fi
   sed -i "/^$2 /d" "$STATE" 2>/dev/null
+  claim_cli --release-owner "kitty:$2" >/dev/null 2>&1 || true
   exit 0
 fi
 
@@ -716,6 +739,18 @@ else
   note "slot override: $SLOT_OVERRIDE (another seat may hold the slot)"
 fi
 
+BRIEF_REF="brief:$(basename "$BRIEF")"
+if [ -z "$SLOT_OVERRIDE" ]; then
+  # stderr stays visible: a missing CLI says so here, before the launch.
+  claim_out=$(claim_cli --check "$CWD" "$BRIEF_REF")
+  if [ $? -eq 3 ]; then
+    holder=$(printf '%s' "$claim_out" | jq -r '.heldByOthers[0] | "\(.sessionId // .cwd) (claimed \(.claimedMinutesAgo) min ago\(if .note then ": " + .note else "" end))"' 2>/dev/null)
+    die "another live seat already holds $BRIEF_REF in $CWD: ${holder:-see task-claim.mjs --list} — nothing launched.
+        Two seats on one brief is the race claims exist for (2026-09-25, windows 29 and 31).
+        Re-run with --slot-override \"<reason>\" only when the second seat is deliberate."
+  fi
+fi
+
 WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" \
         bash -lc "${KEY_PREFIX}exec omp $OMP_ARGS" 2>/dev/null)
 # Shape, not just emptiness: anything extra on stdout would become a second
@@ -727,6 +762,7 @@ WPID=$(win_pid "$WID")
 # --close is untouched: it matches on the id and refuses strangers as before.
 printf '%s %s @%s %s\n' "$WID" "$WPID" "$LAUNCHER" "$TITLE" >> "$STATE"
 note "launched window $WID (pid $WPID) — $TITLE"
+claim_cli --claim "$CWD" "$BRIEF_REF" --owner "kitty:$WID" --note "$TITLE" >/dev/null 2>&1 || true
 
 # Poll for the prompt rather than guessing at the handshake. omp loads MCP
 # servers before it draws one, and that time is not constant.
@@ -853,6 +889,7 @@ first_turn_abort() {
 close_proven_window() {
   kitty @ close-window --match "id:$WID" 2>/dev/null || true
   sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
+  claim_cli --release-owner "kitty:$WID" >/dev/null 2>&1 || true
 }
 TAB_SESSION=""; TAB_MODEL=""; ABORTED=""
 for _ in $(seq 1 15); do
