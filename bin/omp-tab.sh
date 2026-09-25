@@ -9,6 +9,7 @@
 #              [--profile NAME | --no-profile] [--model PROVIDER/NAME] [--fallback]
 #              [--tools a,b,c] [--thinking low|medium|high|…]
 #              [--no-ground-truth] [--mcp full] [--slot-override "<reason>"]
+#              [--seat overseer|supervisor]
 #   omp-tab.sh --close <window-id>
 #   omp-tab.sh --list
 #   omp-tab.sh --help | -h
@@ -316,6 +317,9 @@ MCP_FULL=""
 NO_GT=""
 OVERWRITE=""
 SLOT_OVERRIDE=""
+# --seat: this tab is an overseer or supervisor seat. Only a seat may launch on
+# a model in seatOnlyModels (Opus, agent-config#852); a worker may not.
+SEAT=""
 LAUNCH_ARGV=("$@")
 # Retry guard (agent-config#696): the first-turn-abort check below re-execs this
 # script once with OMP_TAB_ATTEMPT=2. Internal only, never a CLI flag.
@@ -342,6 +346,7 @@ while [ $# -gt 0 ]; do
     --help|-h) print_help; exit 0 ;;
     --no-ground-truth) NO_GT=1; shift ;;
     --slot-override) SLOT_OVERRIDE="${2:-}"; [ -n "$SLOT_OVERRIDE" ] || die "--slot-override needs a reason (it is printed on launch, so the overlap is visible to the other seat)" ; shift 2 || die "--slot-override needs a value" ;;
+    --seat) case "${2:-}" in overseer|supervisor) SEAT="$2"; shift 2 ;; *) die "--seat takes overseer or supervisor" ;; esac ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -367,6 +372,33 @@ fi
 for v in "$TITLE" "$BRIEF" "$OUT"; do
   case "$v" in *$'\n'*|*$'\r'*) die "--title/--brief/--out must each be a single line" ;; esac
 done
+# ── brief lint (agent-config phase 1 report row 8) ─────────────────────────
+# Rules the supervisor and overseer skills stated in prose, checked on the
+# file before anything else runs:
+#   * a line over 768 bytes: omp's read cuts a line there, so what ends it is
+#     never read (overseer-2 lost 18 minutes of log coverage on 2026-09-11 to a
+#     destination cut off mid-sentence);
+#   * a bare `#N` placeholder outside backticks or a fenced block: a tab copies
+#     it into a commit subject or PR body (this repo's 2e48705 shipped `(#N)`);
+#   * `--tools` without `task`: a seat that cannot fan out subagents does the
+#     breadth work itself, in its own context;
+#   * no parking line (`er lokið, ekkert í gangi`) and no `READY:` line: the
+#     caller cannot tell a finished tab from an idle one. A warning, because a
+#     brief may end its turn another way.
+LONG_LINES=$(LC_ALL=C awk 'length($0) > 768 { printf "%s%d", s, NR; s = "," }' "$BRIEF")
+[ -z "$LONG_LINES" ] || die "brief line(s) $LONG_LINES are over 768 bytes: omp's read cuts a line there, so the end of each is never read.
+        Split them, one instruction per line. Nothing launched."
+PLACEHOLDERS=$(awk '/^[[:space:]]*```/ { f = !f; next } f { next }
+  { l = $0; gsub(/`[^`]*`/, "", l); if (l ~ /(^|[^[:alnum:]_&])#(N|NN|NNN|n|<n>)([^[:alnum:]_]|$)/) { printf "%s%d", s, NR; s = "," } }' "$BRIEF")
+[ -z "$PLACEHOLDERS" ] || die "brief line(s) $PLACEHOLDERS carry a bare #N placeholder outside backticks: a tab copies it
+        into a commit subject or PR body. Name the real issue number, or quote the example in backticks. Nothing launched."
+if [ -n "$TOOLS" ] && ! printf ',%s,' "$TOOLS" | grep -q ',task,'; then
+  die "--tools $TOOLS has no task: the tab cannot fan out subagents and does the breadth work in its own context.
+        Add task to the list. Nothing launched."
+fi
+if ! grep -q 'er lokið, ekkert í gangi' "$BRIEF" && ! grep -q 'READY:' "$BRIEF"; then
+  note "WARNING: the brief has no parking line (er lokið, ekkert í gangi) and no READY: line, so a finished tab and an idle one look the same"
+fi
 if [ -n "$OUT" ] && [ -z "$OVERWRITE" ] && [ -s "$OUT" ]; then
   die "--out $OUT already exists and is non-empty. Pass --overwrite to reuse it or choose a new path. Nothing was launched."
 fi
@@ -407,6 +439,8 @@ elif op == "allowed":
     print("\n".join(t.get("allowedModels", [])))
 elif op == "has_allowed":
     print("yes" if "allowedModels" in t else "no")
+elif op == "seat_only":
+    print("\n".join(t.get("seatOnlyModels", [])))
 PY
 }
 
@@ -607,6 +641,12 @@ if [ "$(tbl has_allowed)" = yes ]; then
 else
   note "no allowedModels key in $PROVIDERS_JSON: no allowlist, any model may launch (old behaviour)"
 fi
+# Seat-only models (seatOnlyModels in the same table): Opus is allowlisted for
+# overseer and supervisor seats only. Without --seat the launch is a worker.
+while IFS= read -r _seat_only; do
+  [ -n "$_seat_only" ] && [ "$_seat_only" = "$EFFECTIVE" ] && [ -z "$SEAT" ] && die "model $EFFECTIVE is seat-only (seatOnlyModels in $PROVIDERS_JSON) — nothing launched.
+        Pass --seat overseer|supervisor for a seat, or launch a worker on a worker model."
+done < <(tbl seat_only)
 
 kitty_up || die "kitty remote control unavailable.
         Fall back to a headless run and SAY SO to the user, rather than letting
@@ -721,6 +761,10 @@ slot_holders() {
     case " $live_ids " in *" $row_id "*) ;; *) continue ;; esac
     [ "$(win_pid "$row_id")" = "${2:-}" ] || continue
     [ "$row_launcher" = "$LAUNCHER" ] && continue
+    # The caller's OWN window is not a holder: a supervisor tab launched by an
+    # overseer carries the overseer as launcher, so it used to block its own
+    # package launches (--slot-override "window 2 is my own seat", 2026-09-19).
+    [ -n "${KITTY_WINDOW_ID:-}" ] && [ "$row_id" = "$KITTY_WINDOW_ID" ] && continue
     printf '%s (launcher %s)' "$row_id" "$row_launcher"
   done < "$STATE"
   set +f
