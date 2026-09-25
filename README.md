@@ -55,6 +55,22 @@ Add the repo's hook file, in place, to the existing `UserPromptSubmit` hook list
 
 The hook reads this session's unacked rows by session id, acks each with `prompt`, prints them as turn context, and refreshes this session's presence entry so senders route here instead of the terminal. It always exits 0 and prints nothing when the inbox is empty.
 
+### Codex desktop: the inbox hook
+
+Add the switchboard hook to the existing `SessionStart`, `UserPromptSubmit`, and `SessionEnd` lists in `~/.codex/hooks.json`. Keep the existing handlers; Codex loads all matching hook sources. If this machine uses a switchboard environment bootstrap, preload it before the hook so the Codex app uses the same SQLite store as the other agents:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node --import <switchboard-env.mjs> <checkout>/hooks/codex/mailbox.mjs" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node --import <switchboard-env.mjs> <checkout>/hooks/codex/mailbox.mjs" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node --import <switchboard-env.mjs> <checkout>/hooks/codex/mailbox.mjs" }] }]
+  }
+}
+```
+
+For a standalone installation without a bootstrap, omit `--import <switchboard-env.mjs>`. Codex supplies a stable `session_id` and `cwd` to the hook. The hook registers that identity as a consumer, adds pending messages as context on the next submitted prompt, acknowledges them, and releases the beacon at session end. Codex has no lifecycle event for an external mailbox write, so a reply sent while its chat is idle waits until the next prompt. Review and trust the hook definition in Codex before relying on it; changed non-managed hooks are skipped until trusted.
+
 ### Omp: the consumer hook
 
 omp loads hooks from its hooks directory. Symlink the one hook file into it. Its relative imports (`../lib/window-id.ts`, `../../../lib/agent-mailbox.mjs`) resolve from the file's real path, so they keep pointing into the checkout:
