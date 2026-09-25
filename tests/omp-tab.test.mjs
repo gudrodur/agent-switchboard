@@ -1159,3 +1159,86 @@ test('--slot-override without a reason is refused', async () => {
   assert.match(r.err, /--slot-override needs a reason/);
   assert.equal(await launched(), false);
 });
+
+// ---- brief claims (agent-config task-claim.mjs) ----
+//
+// Two seats on one brief is the race task claims exist for (2026-09-25:
+// overseer windows 29 and 31 ran one brief, and 29 reset the tree under 31).
+// The launcher checks the brief claim before launching, claims it for the new
+// window, and releases it on --close. The claim CLI is stubbed through the
+// OMP_TAB_TASK_CLAIM seam: it logs its argv and answers --check with the exit
+// code in $state/claim-rc (3 = another live seat holds it).
+const claimStub = async () => {
+  const p = path.join(binDir, 'task-claim-stub.mjs');
+  await fs.writeFile(
+    p,
+    [
+      "import fs from 'node:fs';",
+      `const state = ${JSON.stringify(stateDir)};`,
+      "fs.appendFileSync(`${state}/claim-calls`, `${process.argv.slice(2).join(' ')}\\n`);",
+      "if (process.argv[2] === '--check') {",
+      "  let rc = 0; try { rc = Number(fs.readFileSync(`${state}/claim-rc`, 'utf8')); } catch {}",
+      "  if (rc === 3) console.log(JSON.stringify({ heldByOthers: [{ sessionId: 'kitty:29', claimedMinutesAgo: 4, note: 'overseer seat' }] }));",
+      '  process.exit(rc);',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  return p;
+};
+const claimCalls = async () =>
+  (await fs.readFile(path.join(stateDir, 'claim-calls'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
+const resetClaims = async (rc) => {
+  await fs.rm(path.join(stateDir, 'claim-calls'), { force: true });
+  await fs.writeFile(path.join(stateDir, 'claim-rc'), String(rc));
+};
+
+test('a brief another live seat claimed refuses the launch and names the holder', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(3);
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_TASK_CLAIM: await claimStub() });
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /another live seat already holds brief:brief-gt\.md/);
+  assert.match(r.err, /kitty:29 \(claimed 4 min ago: overseer seat\)/);
+  assert.equal(await launched(), false, 'a refused brief launches nothing');
+  assert.deepEqual(await claimCalls(), ['--check /tmp brief:brief-gt.md']);
+});
+
+test('a free brief launches and is claimed for the new window', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(0);
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_TASK_CLAIM: await claimStub() });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.deepEqual(await claimCalls(), [
+    '--check /tmp brief:brief-gt.md',
+    `--claim /tmp brief:brief-gt.md --owner kitty:${WID} --note omp: t7 test`,
+  ]);
+});
+
+test('--slot-override launches past a held brief without checking, and still claims', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(3);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--slot-override', 'second reviewer on purpose'], {
+    OMP_TAB_TASK_CLAIM: await claimStub(),
+  });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  const calls = await claimCalls();
+  assert.equal(calls.some((c) => c.startsWith('--check')), false);
+  assert.ok(calls.some((c) => c.startsWith(`--claim /tmp brief:brief-gt.md --owner kitty:${WID}`)));
+});
+
+test('--close releases the closed window’s claims', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(0);
+  await writeRows(`${WID} ${process.pid} @seatA omp: mine`);
+  const r = await runScript(['--close', WID], { OMP_TAB_TASK_CLAIM: await claimStub() });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.deepEqual(await claimCalls(), [`--release-owner kitty:${WID}`]);
+});
+
+test('a missing claim CLI is a loud skip, never a refusal', async () => {
+  await reset(NEW_TUI);
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_TASK_CLAIM: path.join(stateDir, 'no-such-cli.mjs') });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /task-claim CLI not found at .*no-such-cli\.mjs — brief claims skipped/);
+});
