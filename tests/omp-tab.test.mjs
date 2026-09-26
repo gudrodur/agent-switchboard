@@ -345,16 +345,16 @@ test('an audit that passes leaves the launch alone', async () => {
 
 test('valid --tools pass the gate and launch', async () => {
   await reset(NEW_TUI);
-  const r = await runScript([...baseArgs('brief-gt.md'), '--tools', 'read,grep,glob,lsp,bash,web_search']);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--tools', 'read,grep,glob,lsp,bash,web_search,task']);
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.err, /confirmed running/);
   assert.equal(await launched(), true);
-  assert.match(await ompCalls(), /--tools read,grep,glob,lsp,bash,web_search/);
+  assert.match(await ompCalls(), /--tools read,grep,glob,lsp,bash,web_search,task/);
 });
 
 test('an unknown --tools name refuses with omp message and launches nothing', async () => {
   await reset(NEW_TUI);
-  const r = await runScript([...baseArgs('brief-gt.md'), '--tools', 'read,grep,glob,bash,write,edit,browser']);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--tools', 'read,grep,glob,bash,write,edit,task,browser']);
   assert.equal(r.code, 1, `${r.out}${r.err}`);
   assert.match(r.err, /Unknown tool in --tools: browser/);
   assert.match(r.err, /Nothing launched/);
@@ -1241,4 +1241,102 @@ test('a missing claim CLI is a loud skip, never a refusal', async () => {
   const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_TASK_CLAIM: path.join(stateDir, 'no-such-cli.mjs') });
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.err, /task-claim CLI not found at .*no-such-cli\.mjs — brief claims skipped/);
+});
+
+// ---- brief lint, seat-only models and the caller's own window (agent-config phase 1 report row 8) ----
+const writeBrief = async (name, body) => {
+  await fs.writeFile(path.join(stateDir, name), `# Brief\n\n## GROUND TRUTH\n\n- Today is 2026-09-25.\n${body}`);
+  return name;
+};
+
+test('a brief line over 768 bytes refuses the launch and names the line', async () => {
+  await reset(NEW_TUI);
+  const name = await writeBrief('brief-long.md', `- ${'x'.repeat(800)}\n- short line\n`);
+  const r = await runScript(baseArgs(name));
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /brief line\(s\) 6 are over 768 bytes/);
+  assert.equal(await launched(), false);
+});
+
+test('a bare #N placeholder refuses; one in backticks or a fenced block launches', async () => {
+  await reset(NEW_TUI);
+  const bad = await writeBrief('brief-ph.md', '- Commit as "fix: retry once (#N)".\n');
+  const r = await runScript(baseArgs(bad));
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /brief line\(s\) 6 carry a bare #N placeholder/);
+  assert.equal(await launched(), false);
+
+  await reset(NEW_TUI);
+  const ok = await writeBrief('brief-ph-ok.md', '- An example writes `#N`, never a real number.\n```\ngh pr create --body "refs #N"\n```\n- Issue #1022 is real.\n');
+  const r2 = await runScript(baseArgs(ok));
+  assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
+});
+
+test('--tools without task refuses and launches nothing', async () => {
+  await reset(NEW_TUI);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--tools', 'read,grep,bash']);
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /--tools read,grep,bash has no task/);
+  assert.equal(await launched(), false);
+});
+
+test('a brief with no parking line and no READY: line warns but launches', async () => {
+  await reset(NEW_TUI);
+  const r = await runScript(baseArgs('brief-gt.md'));
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /WARNING: the brief has no parking line/);
+  await reset(NEW_TUI);
+  const parked = await writeBrief('brief-parked.md', '- End: Bíð eftir næsta skilaboði — T1 er lokið, ekkert í gangi.\n');
+  const r2 = await runScript(baseArgs(parked));
+  assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
+  assert.doesNotMatch(r2.err, /no parking line/);
+});
+
+const seatTable = async () => {
+  const p = path.join(stateDir, 'providers-seat.json');
+  await fs.writeFile(
+    p,
+    JSON.stringify({
+      providers: { 'opencode-go': { enabled: true, check: 'probe' }, anthropic: { enabled: true, check: 'probe' } },
+      fallback: ['opencode-go/muse-spark-1.3-contributor'],
+      allowedModels: ['opencode-go/muse-spark-1.3-contributor', 'anthropic/claude-opus-5-5'],
+      seatOnlyModels: ['anthropic/claude-opus-5-5'],
+    }),
+  );
+  return p;
+};
+
+test('a seat-only model refuses a worker launch and names --seat', async () => {
+  await reset(NEW_TUI);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--model', 'anthropic/claude-opus-5-5'], { OMP_TAB_PROVIDERS: await seatTable() });
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /model anthropic\/claude-opus-5-5 is seat-only/);
+  assert.match(r.err, /--seat overseer\|supervisor/);
+  assert.equal(await launched(), false);
+});
+
+test('--seat launches a seat-only model; a worker model needs no --seat', async () => {
+  await reset(NEW_TUI);
+  const table = await seatTable();
+  const seat = await runScript([...baseArgs('brief-gt.md'), '--model', 'anthropic/claude-opus-5-5', '--seat', 'overseer'], { OMP_TAB_PROVIDERS: table });
+  assert.notEqual(seat.code, 1, `${seat.out}${seat.err}`);
+  assert.doesNotMatch(seat.err, /seat-only/);
+  assert.equal(await launched(), true);
+  await reset(NEW_TUI);
+  const r = await runScript([...baseArgs('brief-gt.md'), '--seat', 'captain']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /--seat takes overseer or supervisor/);
+});
+
+test("the caller's own window is not a slot holder, even when another seat launched it", async () => {
+  await reset(NEW_TUI);
+  await writeRows(`${WID} ${process.pid} @overseer-seat omp: supervisor seat`);
+  const own = await runScript(baseArgs('brief-gt.md'), { KITTY_WINDOW_ID: WID });
+  assert.equal(own.code, 0, `${own.out}${own.err}`);
+  assert.equal(await launched(), true);
+  await reset(NEW_TUI);
+  await writeRows(`${WID} ${process.pid} @overseer-seat omp: supervisor seat`);
+  const other = await runScript(baseArgs('brief-gt.md'), { KITTY_WINDOW_ID: '5' });
+  assert.equal(other.code, 1, `${other.out}${other.err}`);
+  assert.match(other.err, /another seat holds the package-tab slot/);
 });
