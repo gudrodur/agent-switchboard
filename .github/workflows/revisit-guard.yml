@@ -1,0 +1,93 @@
+# Guards the `blocked: time` convention at the moment it is used.
+#
+# `blocked: time` says nobody is being chased — only elapsed time or accumulated
+# data unblocks the issue. The thing that brings it back is a `Revisit:
+# YYYY-MM-DD` line in the body, read weekly by ~/.claude/scripts/revisit-sweep.mjs.
+# A label applied WITHOUT that line is a promise nothing can keep: the issue is
+# marked as sleeping and nothing will ever wake it.
+#
+# Deliberately a LOOSE check. It asks only whether a dated Revisit line is there
+# at all, which is the failure that actually happens; the sweep remains the
+# precise arbiter of whether the date parses and is a real day. Two layers that
+# do not pretend to be each other, and — the point — no shared regex to drift
+# across the repos this file is installed in.
+#
+# That last clause used to name a count. It cannot: this file is COPIED into
+# every repo that opts in, so a number written here is wrong in every older copy
+# the moment one more repo joins. The live count is whatever
+# scripts/lib/convention-repos.mjs holds, and convention-audit.mjs reports which
+# of them are missing the file.
+#
+# It comments ONCE, keyed on a marker, so editing the issue repeatedly does not
+# spam it. Fixing the body produces no confirmation comment: silence is the
+# success signal, and the weekly sweep will list the issue as `waiting`.
+#
+# runs-on resolves through GUARD_RUNNER_LABELS, whose literal default is
+# ubuntu-slim: GitHub's single-CPU hosted runner, 1 vCPU / 5 GB, $0.002 a minute
+# against $0.006 for ubuntu-latest (docs.github.com/billing/reference/
+# actions-runner-pricing, read 2026-09-19). The default must stay HOSTED: this file
+# is COPIED into every repo that opts in, most of which have no self-hosted lane,
+# and a guard that only fires when some box is awake is not a guard. slim fits
+# because these jobs are seconds of github-script or a short node run, well inside
+# its 15-minute job timeout, and it ships bash, git, jq and Node 24. What the
+# variable adds is the way out of a spent hosted pool: an operator can point the
+# guard at a lane with `gh variable set GUARD_RUNNER_LABELS` when hosted jobs die in
+# seconds, which is exactly the moment a commit-and-PR escape cannot be used,
+# because the PR's own checks would be waiting on the pool that is spent.
+name: revisit-guard
+
+on:
+  issues:
+    types: [labeled, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ${{ fromJSON(vars.GUARD_RUNNER_LABELS || '["ubuntu-slim"]') }}
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const LABEL = "blocked: time";
+            const MARKER = "<!-- revisit-guard -->";
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const num = issue.number;
+
+            const labelled = (issue.labels || []).some((l) => (l.name || l) === LABEL);
+            if (!labelled) return;
+
+            // Loose on purpose — see the header. `Revisit:` followed by something
+            // date-shaped, anywhere in the body, tolerating bold/backticks/quoting.
+            const hasDate = /^[\s>*_`-]*revisit[*_`]*\s*:\s*[*_`]*\s*\d{4}-\d{2}-\d{2}/im
+              .test(issue.body || "");
+            if (hasDate) return;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: num, per_page: 100,
+            });
+            if (comments.some((c) => (c.body || "").includes(MARKER))) return;
+
+            const body = [
+              MARKER,
+              "⏳ **`blocked: time` with no `Revisit:` date — nothing will wake this issue.**",
+              "",
+              "The label says there is nobody to chase and only elapsed time or accumulated",
+              "data unblocks this. What brings it back is a line in the body:",
+              "",
+              "```markdown",
+              "## Revisit",
+              "",
+              "Revisit: 2027-02-26 — what you are waiting for, in one clause",
+              "```",
+              "",
+              "ISO date, and say what you are waiting for: the sweep echoes that clause back",
+              "when the date arrives, and it is exactly what a reader has forgotten by then.",
+              "",
+              "Without it the weekly sweep reports this issue as `undated` and never comments,",
+              "because there is no date to reach. Add the line, or drop the label if the work",
+              "is actually blocked on a person — that is plain `blocked`.",
+            ].join("\n");
+            await github.rest.issues.createComment({ owner, repo, issue_number: num, body });
