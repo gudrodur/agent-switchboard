@@ -1,0 +1,128 @@
+# Enforces the issue-title convention: `area: description`, where `area` is a
+# lowercase token from THIS repo's vocabulary.
+#
+# The grammar is global across every repo on this machine; the vocabulary is
+# not — `kosningar` is meaningless in flue-lab and `browser` in borgarland. So
+# the list lives in `.github/issue-areas.json`, and this workflow reads it
+# rather than embedding a copy. The PreToolUse hook on the dev machine
+# (~/.claude/scripts/issue-title-hook.mjs) reads the SAME file, so the gate that
+# runs before an issue exists and the gate that runs after cannot disagree.
+#
+# This is the BACKSTOP, not the main event. Measured 2026-08-27: of the 33
+# violations in xj-greenfield since June, every one was filed from the dev
+# machine's CLI — so the hook catches essentially all of them before the issue
+# exists. What is left for this workflow is what the hook cannot see: the web
+# UI, a phone, another machine, another person, a cloud session.
+#
+# It does NOT close the issue. An earlier version did, on the reasoning that
+# GitHub cannot block issue creation so closing was the strictest lever
+# available. It buys nothing measurable — the 22 violations in the repo that
+# only labels were fixed at the same rate as the 33 in the repo that closed —
+# and it costs the one thing a tracker exists for: `closed` already means "done"
+# to every human and every query, so overloading it with "rejected, pending fix"
+# makes the two indistinguishable. The label is the machine-readable signal;
+# open state keeps the work visible.
+#
+# Nothing here escalates. If a labelled issue is ignored, the weekly sweep
+# (~/.claude/scripts/revisit-sweep.mjs) is what says so.
+name: issue-title-guard
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled]
+
+permissions:
+  # `contents: read` is NOT optional here, and its absence is invisible until the
+  # workflow runs. Declaring a permissions block sets every scope you do not name
+  # to `none`, so with `issues: write` alone actions/checkout gets no read access
+  # and its fetch fails with "Repository not found" — a 404 that reads like the
+  # repo is gone rather than like a permission. Caught on the first execution
+  # ever, by a deliberate smoke test on a throwaway issue.
+  contents: read
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ${{ fromJSON(vars.GUARD_RUNNER_LABELS || '["ubuntu-slim"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("fs");
+            const LABEL = "title-needs-fix";
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const num = issue.number;
+
+            // No vocabulary means this repo has not opted in. Do nothing at all
+            // rather than guessing a list — a guard that invents the rule it
+            // enforces is worse than an absent one.
+            let vocab;
+            try {
+              vocab = JSON.parse(fs.readFileSync(".github/issue-areas.json", "utf8"));
+            } catch {
+              core.info("no .github/issue-areas.json — guard inactive in this repo");
+              return;
+            }
+            const areas = vocab.areas || [];
+            const nearMisses = vocab.nearMisses || {};
+            if (areas.length === 0) {
+              core.info("empty area list — guard inactive rather than rejecting everything");
+              return;
+            }
+
+            const labelled = (issue.labels || []).some((l) => (l.name || l) === LABEL);
+
+            // Two stages, mirroring scripts/issue-title-guard.mjs. Validity is
+            // ASCII; DIAGNOSIS is widened to Icelandic letters so the comment can
+            // say "`skráning` is not an area, did you mean `skraning`?" instead
+            // of "no area prefix at all", which was both unhelpful and untrue in
+            // Icelandic repos. An accented token is never valid.
+            const m = /^([a-z0-9-]+):\s+\S/.exec(issue.title || "");
+            const wide = /^([\p{Ll}\p{Lo}0-9-]+):\s+\S/u.exec(issue.title || "");
+            const area = m ? m[1] : (wide ? wide[1] : null);
+            const ok = !!m && areas.includes(m[1]);
+
+            // Same transliteration as the module — ISNIC's IDN→non-IDN table
+            // (isnic.is/en/faq#q10-2): accents dropped, þ→th, ð→d, æ→ae, ö→o.
+            const FOLD = { "þ": "th", "ð": "d", "æ": "ae", "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ý": "y", "ö": "o" };
+            const folded = area ? [...area].map((c) => FOLD[c] || c).join("") : null;
+            const foldHint = folded && folded !== area && areas.includes(folded) ? folded : null;
+
+            if (ok) {
+              if (!labelled) return;
+              await github.rest.issues
+                .removeLabel({ owner, repo, issue_number: num, name: LABEL })
+                .catch(() => {});
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: num,
+                body: "✅ Title now follows `area: description`.",
+              });
+              return;
+            }
+
+            // Comment + label only on first detection — no spam on repeated edits.
+            if (labelled) return;
+            await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: [LABEL] });
+            const near = (area && nearMisses[area]) || foldHint;
+            const body = [
+              "🚫 **This issue title does not follow the repo convention.**",
+              "",
+              "**Rule:** `area: concise description` — `area` lowercase, from this repo's list.",
+              area
+                ? "**Problem:** `" + area + "` is not an area in this repo." + (near ? " Did you mean `" + near + "`?" : "")
+                : "**Problem:** no `area:` prefix at all.",
+              "**Valid areas:** " + areas.map((a) => "`" + a + "`").join(", ") + ".",
+              "",
+              "Type (epic / bug / enhancement …) goes in a **label**, never the title.",
+              "If the area is genuinely new, add it to `.github/issue-areas.json` in its own PR.",
+              "",
+              "The issue is **open and stays open** — the `" + LABEL + "` label is the signal, not a closure.",
+              "Edit the title to match and the label is removed automatically.",
+            ].join("\n");
+            await github.rest.issues.createComment({ owner, repo, issue_number: num, body });

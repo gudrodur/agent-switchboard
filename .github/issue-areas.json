@@ -1,23 +1,5 @@
 {
-  "$comment": "Issue-title vocabulary for this repo: every issue title reads `area: description`, with the area taken from this list. Adding an area is a pull request against this file, so the list stays a vocabulary. nearMisses maps a likely wrong word to the area it means.",
-  "areas": [
-    "mailbox",
-    "fallback",
-    "launcher",
-    "hooks",
-    "docs",
-    "ci",
-    "meta"
-  ],
-  "nearMisses": {
-    "agent-send": "mailbox",
-    "kitty": "fallback",
-    "kitty-send": "fallback",
-    "tab": "launcher",
-    "omp-tab": "launcher",
-    "hook": "hooks",
-    "readme": "docs",
-    "workflow": "ci",
-    "tests": "ci"
-  }
+  "$comment": "Issue-title vocabulary for this repo. ONE source of truth, read by BOTH the workflow and the PreToolUse hook. Seeded 2026-09-26 from what this repo holds: the mailbox and agent-send (messaging), omp-tab and its state (launcher), kitty-send (kitty), plus the shared areas.",
+  "areas": ["messaging","launcher","kitty","docs","dev","infra","meta"],
+  "nearMisses": {"mailbox":"messaging","agent-send":"messaging","omp-tab":"launcher","tabs":"launcher","ci":"infra","doc":"docs","chore":"meta","test":"dev"}
 }
