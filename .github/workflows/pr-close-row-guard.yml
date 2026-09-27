@@ -1,0 +1,49 @@
+# Server-side guard: fail a PR whose description closes an issue's rows with a
+# closing keyword (agent-config#950 row 1).
+#
+# GitHub reads a closing keyword (closes/fixes/resolves) anywhere in a PR
+# description as closing the WHOLE issue. On 2026-09-27 #28 here began
+# "Fixes gudrodur/agent-config#914 row 1." and its merge closed #914 with rows
+# 1-4 still waiting on a Recheck. The dev machine's PreToolUse hook missed it
+# (a heredoc body), and this repo had no backstop.
+#
+# Twin of agent-config's .github/workflows/pr-close-row-guard.yml. That one
+# imports its matcher from scripts/pr-close-row-hook.mjs; this repo has no copy
+# of that file and agent-config is private, so CLOSE_ROW_RE is inlined below.
+# agent-config's pr-close-row-hook.test.mjs pins the regex source and names
+# this file, so a change there says to update this one.
+#
+# The body travels through the PR_BODY env var, never interpolated into `run:`
+# (`${{ }}` inside `run:` is an injection hole). It fails a check and edits
+# nothing, so it needs no write scope, and the matcher is inline, so no checkout.
+name: pr-close-row-guard
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  guard:
+    runs-on: ${{ fromJSON(vars.GUARD_RUNNER_LABELS || '["ubuntu-slim"]') }}
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Refuse a PR description that closes an issue's rows
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          node -e '
+          const CLOSE_ROW_RE = /\b(?:close[sd]?|fix(?:e[sd]?)?|resolve[sd]?)(?:\s*:)?\s+(?:[\w.-]+\/[\w.-]+)?#\d+[,\s:]*rows?\b/i;
+          const m = CLOSE_ROW_RE.exec(process.env.PR_BODY ?? "");
+          if (!m) { console.log("no closing-keyword row reference in the PR description"); process.exit(0); }
+          console.error("⛔ PR description closes an issue’s rows with a closing keyword.");
+          console.error("   matched: " + m[0]);
+          console.error("   rule:    GitHub reads a closing keyword (closes/fixes/resolves) anywhere in a PR description as closing the WHOLE issue — even when the sentence only means some of its rows.");
+          console.error("   fix:     write `refs #n` and list the rows.");
+          process.exit(1);
+          '
