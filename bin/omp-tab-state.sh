@@ -24,15 +24,37 @@
 # against the window (cwd equal, session timestamp later than the window
 # created_at) and a mismatch reports unknown, never another tab's state.
 #
-# State table, from the tail of the file, last row wins:
+# State table, from the tail of the file, last DECISIVE row wins:
 #   exited  a session_exit row (the process is gone; steering it is pointless)
-#   idle    last message row is role:assistant with stopReason:stop (at rest)
+#   idle    last decisive row is a message row with role:assistant and
+#           stopReason:stop (at rest)
 #   busy    anything else: role:user (submitted, waiting), role:assistant with
 #           stopReason:toolUse (mid-turn), role:toolResult, or a trailing
-#           tool_execution_start custom row; tool= names the most recent tool
+#           tool_execution_start custom row with no message row after it (a
+#           tool call whose result the harness has not yet written); tool=
+#           names the most recent tool
 #   unknown the link is unproven (no file, cwd mismatch, session older than
 #           the window); reason= says which, and the caller falls back to the
 #           screen (the spinner), which is the weaker proof
+#
+# Decisive vs. ambient rows: a session file also carries rows that name no
+# work in progress on the tab's own turn — advisor commentary, coordination
+# pings, mailbox/hook deliveries recorded for context, todo nudges, skill
+# prompts, model/title/thinking-level changes, compaction markers, credential
+# pins, and the like (all `custom_message` rows, plus every `custom` row
+# other than tool_execution_start and session_exit, plus every non-`message`
+# top-level type). These are ambient: they get skipped when hunting for the
+# last decisive row, however many of them stack up. Measured 2026-09-27: a
+# real xj-greenfield session carried 44 such ambient rows (mostly
+# customType:advisor) between its last assistant stopReason:stop message and
+# session_exit — comfortably within what used to be this script's tail
+# window, but the mechanism (coordination/advisor/mailbox rows keep landing
+# in the file while a tab sits at rest waiting on the overseer) has no upper
+# bound, and a longer wait pushes the true last message row out of a small
+# fixed tail entirely, which used to default to busy on the empty read. The
+# tail is now $TAIL_LINES lines (not 60) and the search for the last row
+# looks only at message rows and the two decisive custom types, so ambient
+# volume ahead of that no longer matters.
 #
 # When the state is idle or exited the line also carries jobs=N, the
 # background jobs still alive at end of file (jobs=0 when none; jobs=unknown
@@ -58,10 +80,19 @@
 # under $HOME/.omp/agent, because omp writes them, not this repo);
 # kitty is resolved from PATH so a stub can serve canned `ls`.
 # OMP_TAB_STATE_PTS_N overrides the /proc readlink (the test's own fd 0 is
-# not a pty it controls).
+# not a pty it controls). OMP_TAB_STATE_TAIL_LINES overrides how many lines
+# of the session file are read for the last-row search (default 1000; tests
+# use a small value to prove the ambient-row skip without huge fixtures).
 
 die()  { printf '%s\n' "omp-tab-state: $1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "omp-tab-state: $*" >&2; }
+
+# Lines of the session file read for the last-row search. Generous on
+# purpose: ambient rows (advisor/coordination/mailbox/etc., see the state
+# table above) are skipped by the jq filter regardless of how many stack up,
+# but they still have to be IN this window for the skip to see past them.
+# Overridable for tests.
+TAIL_LINES="${OMP_TAB_STATE_TAIL_LINES:-1000}"
 
 SESSDIR="${OMP_TAB_STATE_DIR:-$HOME/.omp/agent/terminal-sessions}"
 # The sibling that owns the alive-jobs walk. Resolved from this file rather
@@ -259,20 +290,32 @@ read_state_once() {
   STATE=idle; TOOL="-"; REASON=""; AGE_S=0
   LINES=$(wc -l < "$SESSION" 2>/dev/null | tr -d ' ' || echo 0)
   [ -n "$LINES" ] || LINES=0
-  TAIL_JSON=$(tail -60 "$SESSION" 2>/dev/null | jq -c -R 'fromjson? // empty' 2>/dev/null | jq -c -s '.' 2>/dev/null) || {
+  TAIL_JSON=$(tail -"$TAIL_LINES" "$SESSION" 2>/dev/null | jq -c -R 'fromjson? // empty' 2>/dev/null | jq -c -s '.' 2>/dev/null) || {
     STATE=unknown; TOOL="-"; REASON="unreadable-session-file"; report_state; exit 2
   }
+  # $last is the last DECISIVE row: a message row (any role), or a custom row
+  # whose customType is tool_execution_start (a tool call in flight with no
+  # message row for it yet) or session_exit. Every other row — every
+  # custom_message row (advisor, coordination, mailbox, todo nudges, skill
+  # prompts, ...) and every other custom/top-level row (model/title/
+  # thinking-level changes, compaction, credential pins, session/session_init,
+  # ...) — is ambient and does not participate in the decision, however many
+  # of them sit after the last real message row.
   EVAL=$(printf '%s' "$TAIL_JSON" | jq -r '
     . as $rows
-    | ([ $rows[] | select(.type == "custom" and .customType == "session_exit") ] | length) as $exits
     | ([ $rows[] | select(.type == "custom" and .customType == "tool_execution_start") | .data.toolName ] | last // "-") as $tool
-    | ([ $rows[] | select(.type == "message") ] | last) as $last
-    | ([ $rows[] | select(.type == "custom" and .customType == "session_exit") ] | last) as $exitrow
+    | ([ $rows[] | select(.type == "message" or (.type == "custom" and (.customType == "tool_execution_start" or .customType == "session_exit"))) ] | last) as $last
     | ($rows | last) as $tail
     | if ($tail.type == "custom" and $tail.customType == "session_exit") then
         {state: "exited", tool: "-", ts: ($tail.timestamp // $tail.data.recordedAt // "")}
       elif $last == null then
         {state: "busy", tool: $tool, ts: (($tail.message.timestamp // $tail.timestamp // "") | tostring)}
+      elif $last.type == "custom" then
+        (if $last.customType == "session_exit" then
+          {state: "exited", tool: "-", ts: ($last.timestamp // $last.data.recordedAt // "")}
+        else
+          {state: "busy", tool: $tool, ts: (($last.timestamp // "") | tostring)}
+        end)
       elif $last.message.role == "assistant" and $last.message.stopReason == "stop" then
         {state: "idle", tool: "-", ts: (($last.message.timestamp // "") | tostring)}
       elif $last.message.role == "assistant" then
