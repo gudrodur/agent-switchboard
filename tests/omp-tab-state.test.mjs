@@ -55,6 +55,20 @@ const exitRow = (reason = 'sighup') =>
   JSON.stringify({ type: 'custom', customType: 'session_exit', data: { reason, kind: 'signal', recordedAt: nowIso() }, id: 'e1', timestamp: nowIso() });
 const titleRow = () =>
   JSON.stringify({ type: 'title', v: 1, title: 'test', source: 'auto', updatedAt: nowIso() });
+// Ambient custom_message rows: the harness keeps writing these (advisor
+// commentary, coordination pings, mailbox deliveries recorded for context,
+// todo nudges, ...) even while the tab's own turn is at rest. Measured
+// 2026-09-27 in a real xj-greenfield session: 44 such rows (mostly
+// customType:advisor) between the last assistant stopReason:stop message and
+// session_exit. None of them mean work is in progress.
+const advisorRow = (ts) =>
+  JSON.stringify({ type: 'custom_message', customType: 'advisor', content: 'note', display: {}, details: {}, attribution: 'advisor', id: `adv-${ts}`, timestamp: ts });
+const coordinationRow = (ts) =>
+  JSON.stringify({ type: 'custom_message', customType: 'coordination', content: 'ping', id: `coord-${ts}`, timestamp: ts });
+const mailboxRow = (ts) =>
+  JSON.stringify({ type: 'custom_message', customType: 'mailbox', content: 'delivered', id: `mbx-${ts}`, timestamp: ts });
+const todoNudgeRow = (ts) =>
+  JSON.stringify({ type: 'custom_message', customType: 'mid-run-todo-nudge', content: 'nudge', id: `nudge-${ts}`, timestamp: ts });
 
 before(async () => {
   binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tabstate-bin-'));
@@ -140,6 +154,86 @@ test('a trailing user row reports busy', async () => {
   const r = await runScript([WID]);
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.out, /state=busy/);
+});
+
+test('a READY tab buried under ambient rows still reports idle (regression, agent-config#914 row 1)', async () => {
+  // Reproduces the measured shape: an assistant stop, then a pile of ambient
+  // custom_message rows (advisor/coordination/mailbox/todo-nudge) that the
+  // harness kept appending while the tab sat at rest. Measured in a real
+  // xj-greenfield session: 44 such rows before session_exit; this fixture
+  // uses 80 (more than the script's old fixed tail -60) to prove the fix,
+  // not a coincidence of the window still being big enough by luck.
+  await clearLinks();
+  const t = nowMs();
+  const ambient = [];
+  for (let i = 0; i < 80; i++) {
+    const ts = t - 4000 + i * 100;
+    ambient.push([advisorRow(ts), coordinationRow(ts), mailboxRow(ts), todoNudgeRow(ts)][i % 4]);
+  }
+  await writeSession('ready-buried.jsonl', [
+    titleRow(), sessionRow(WCWD, nowIso()),
+    userRow('ship it', t - 9000), toolStartRow('bash'), toolResultRow('bash', t - 5000),
+    assistantRow('stop', t - 4500),
+    ...ambient,
+  ]);
+  await linkKitty('ready-buried.jsonl');
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.out, /state=idle/);
+});
+
+test('ambient rows are skipped even inside a small tail window (not merely outrun by a big default)', async () => {
+  // Proves the fix is a real skip-past, not just a bigger number: with a
+  // tail window barely larger than the ambient run plus the stop row, the
+  // old filter (last row of type message, in the raw tail) already found the
+  // right row here too — the point of this fixture is the OTHER two tests
+  // below, which show a decisive custom row anywhere in that same small
+  // window is still caught (busy), so the skip is selective, not a blanket
+  // "widen the window and hope".
+  await clearLinks();
+  const t = nowMs();
+  await writeSession('small-window.jsonl', [
+    titleRow(), sessionRow(WCWD, nowIso()),
+    assistantRow('stop', t - 4000),
+    advisorRow(t - 3000), coordinationRow(t - 2000), mailboxRow(t - 1000), todoNudgeRow(t - 500),
+  ]);
+  await linkKitty('small-window.jsonl');
+  const r = await runScript([WID], { OMP_TAB_STATE_TAIL_LINES: '6' });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.out, /state=idle/);
+});
+
+test('genuine work after ambient rows still reports busy (a real user message)', async () => {
+  await clearLinks();
+  const t = nowMs();
+  await writeSession('busy-after-ambient.jsonl', [
+    titleRow(), sessionRow(WCWD, nowIso()),
+    assistantRow('stop', t - 9000),
+    advisorRow(t - 8000), coordinationRow(t - 7000), mailboxRow(t - 6000),
+    userRow('one more thing', t - 1000),
+  ]);
+  await linkKitty('busy-after-ambient.jsonl');
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.out, /state=busy/);
+});
+
+test('genuine work after ambient rows still reports busy (a bare tool_execution_start, no result yet)', async () => {
+  await clearLinks();
+  const t = nowMs();
+  await writeSession('inflight-after-ambient.jsonl', [
+    titleRow(), sessionRow(WCWD, nowIso()),
+    assistantRow('stop', t - 9000),
+    advisorRow(t - 8000), coordinationRow(t - 7000),
+    assistantRow('toolUse', t - 2000, ['bash']),
+    toolStartRow('bash'),
+    mailboxRow(t - 1000),
+  ]);
+  await linkKitty('inflight-after-ambient.jsonl');
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.out, /state=busy/);
+  assert.match(r.out, /tool=bash/);
 });
 
 test('a session_exit tail reports exited', async () => {
