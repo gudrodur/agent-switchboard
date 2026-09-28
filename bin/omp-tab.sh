@@ -78,6 +78,11 @@ kitty_up() { kitty @ ls >/dev/null 2>&1; }
 # 31. Every launch claims `brief:<basename>` in the --cwd repo for the new
 # window (owner kitty:<id>), a launch whose brief another LIVE window holds is
 # refused unless --slot-override, and --close releases the window's claims.
+# A window closed by hand never reaches --close, so a gone window's claims are
+# released wherever the script learns it is gone: the --list prune, and a
+# --close on a gone id with or without its row (agent-config#994: the
+# `kitty:189` claim outlived its hand-closed tab and warned every session off
+# the brief).
 # The claims live in agent-config's store, reached through its CLI; a missing
 # CLI is a loud skip, never a refusal. Test seam: OMP_TAB_TASK_CLAIM.
 config_root() {
@@ -161,6 +166,7 @@ if [ "${1:-}" = "--list" ]; then
     # stderr count below keeps the signal.
     if [ "$s" = "gone" ]; then
       [ -n "$id" ] && sed -i "/^$id /d" "$STATE" 2>/dev/null && pruned=$((pruned + 1))
+      [ -n "$id" ] && claim_cli --release-owner "kitty:$id" >/dev/null 2>&1
       continue
     fi
     # Proof by state on every row: the tab's session file says idle,
@@ -190,6 +196,14 @@ if [ "${1:-}" = "--close" ]; then
 
   # The whole point: only ever close what this script started.
   row=$(grep "^$2 " "$STATE" 2>/dev/null | head -1)
+  # No row but no window either (the row was pruned by --list after a hand
+  # close): nothing can be closed, so the refusal guards nothing, but the
+  # window's brief claims would outlive it. Release them and say so.
+  if [ -z "$row" ] && [ -z "$(win_pid "$2")" ]; then
+    claim_cli --release-owner "kitty:$2" >/dev/null 2>&1 || true
+    note "window $2 is gone and has no state row — nothing to close; released its kitty:$2 claims"
+    exit 0
+  fi
   [ -n "$row" ] \
     || die "window $2 was not launched by this script — refusing to close it.
         Another host-agent session's omp window looks identical in \`kitty @ ls\`;
@@ -201,7 +215,8 @@ if [ "${1:-}" = "--close" ]; then
   if [ -z "$now_pid" ]; then
     # Not an error worth an exit code, but it must not be reported as a closure.
     sed -i "/^$2 /d" "$STATE" 2>/dev/null
-    note "window $2 was already gone — nothing to close (state row removed)"
+    claim_cli --release-owner "kitty:$2" >/dev/null 2>&1 || true
+    note "window $2 was already gone — nothing to close (state row removed, claims released)"
     exit 0
   fi
 
