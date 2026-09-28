@@ -1236,6 +1236,56 @@ test('--close releases the closed window’s claims', async () => {
   assert.deepEqual(await claimCalls(), [`--release-owner kitty:${WID}`]);
 });
 
+// A window closed by hand never reaches --close (agent-config#994): the
+// `kitty:189` claim outlived its tab and warned every session off the brief.
+// Every place the script learns a window is gone releases its claims.
+const GONE = '424242';
+
+test('a window closed by hand: --close on its gone id releases its claims', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(0);
+  await writeRows(`${GONE} 99999 @seatA omp: closed by hand`);
+  const r = await runScript(['--close', GONE], { OMP_TAB_TASK_CLAIM: await claimStub() });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /already gone .*claims released/);
+  assert.deepEqual(await claimCalls(), [`--release-owner kitty:${GONE}`]);
+});
+
+test('a window closed by hand whose row --list already pruned: --close still releases its claims', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(0);
+  await writeRows(`${WID} ${process.pid} @seatA omp: mine`);
+  const r = await runScript(['--close', GONE], { OMP_TAB_TASK_CLAIM: await claimStub() });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.match(r.err, /gone and has no state row .*released its kitty:424242 claims/);
+  assert.deepEqual(await claimCalls(), [`--release-owner kitty:${GONE}`]);
+});
+
+test('a live window with no row is still refused, and its claims are left alone', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(0);
+  await writeRows();
+  const r = await runScript(['--close', WID], { OMP_TAB_TASK_CLAIM: await claimStub() });
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /not launched by this script/);
+  assert.deepEqual(await claimCalls(), []);
+});
+
+test('the --list prune of a gone row releases that window’s claims', async () => {
+  await reset(NEW_TUI);
+  await resetClaims(0);
+  const pid = (await fs.readFile(path.join(stateDir, 'pid'), 'utf8')).trim();
+  await writeRows(`${WID} ${pid} @seatA omp: live`, `${GONE} 99999 @seatB omp: closed by hand`);
+  const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'omptab-emptysess-'));
+  try {
+    const r = await runScript(['--list'], { OMP_TAB_STATE_DIR: empty, OMP_TAB_TASK_CLAIM: await claimStub() });
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.deepEqual(await claimCalls(), [`--release-owner kitty:${GONE}`]);
+  } finally {
+    await fs.rm(empty, { recursive: true, force: true });
+  }
+});
+
 test('a missing claim CLI is a loud skip, never a refusal', async () => {
   await reset(NEW_TUI);
   const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_TASK_CLAIM: path.join(stateDir, 'no-such-cli.mjs') });

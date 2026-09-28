@@ -141,7 +141,7 @@ Every variable, its default, and what reads it — taken from the code, not from
 
 Two warnings, both load-bearing. `config/omp-providers.json` holds EXAMPLE providers with real public endpoints: a launch with that table unchanged bills those example accounts, so replace its rows with your own before launching anything real. `bin/omp-tab-state.sh` reads omp's own `$HOME/.omp/agent/terminal-sessions` and `sessions` whatever `AGENT_SWITCHBOARD_DIR` says — only the mailbox and presence live under the switchboard directory, because only this repo writes them.
 
-Timers, for orientation: presence beacons go stale after 20 minutes (`PRESENCE_STALE_MS`, imported by the mailbox prune, never restated); the sender waits 120 s for an ack by default (`--deadline N`, unbounded for `--queue`; a busy target acks only at its next tool boundary, and a kitty fallback under `--now` would discard the tool result it was waiting for); the parked-tab fallback poll ticks every 5 s (`IDLE_POLL_MS`); the queued terminal waiter heartbeats every 5 min and never times out unless `--deadline` caps it.
+Timers, for orientation: presence beacons go stale after 20 minutes (`PRESENCE_STALE_MS`, never restated), or at once when the beacon carries a writer pid that is dead (`isLiveBeacon` in `lib/presence.mjs`, which the mailbox readers import); the sender waits 120 s for an ack by default (`--deadline N`, unbounded for `--queue`; a busy target acks only at its next tool boundary, and a kitty fallback under `--now` would discard the tool result it was waiting for); the parked-tab fallback poll ticks every 5 s (`IDLE_POLL_MS`); the queued terminal waiter heartbeats every 5 min and never times out unless `--deadline` caps it.
 
 ## Store (SQLite) and retention
 
