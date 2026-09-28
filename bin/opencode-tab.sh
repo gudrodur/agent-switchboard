@@ -91,7 +91,8 @@ case "${1:-}" in
     # plugin never sees the SIGHUP a closed window sends (its exit and signal
     # handlers did not run, measured 2026-09-27), so the beacon would
     # otherwise outlive the tab by the 20-minute presence TTL. A window
-    # closed by hand still waits out the TTL.
+    # closed by hand needs no release: the plugin records its pid on the
+    # beacon and readers skip a dead one (lib/presence.mjs, agent-config#979).
     "$HERE/omp-tab.sh" "$@" || exit $?
     node --input-type=module -e '
       const { readAllPresence, releasePresence } = await import(process.argv[1]);
