@@ -123,6 +123,15 @@ case "$MODEL" in */*) ;; *) die "--model takes PROVIDER/NAME, got: $MODEL" ;; es
 [ -n "$BRIEF" ] || die "--brief is required"
 case "$BRIEF" in /*) ;; *) die "--brief must be absolute (it resolves against the tab's cwd): $BRIEF" ;; esac
 [ -r "$BRIEF" ] || die "--brief not readable: $BRIEF"
+# The brief lint omp-tab.sh runs, less its 768-byte line cap: the brief goes in
+# as --prompt here, and opencode does not cut a line.
+. "$HERE/../lib/brief-lint.sh"
+PLACEHOLDERS=$(brief_placeholder_lines "$BRIEF")
+[ -z "$PLACEHOLDERS" ] || die "brief line(s) $PLACEHOLDERS carry a bare #N placeholder outside backticks: a tab copies it
+        into a commit subject or PR body. Name the real issue number, or quote the example in backticks. Nothing launched."
+TRAILERS=$(brief_trailer_lines "$BRIEF")
+[ -z "$TRAILERS" ] || die "brief line(s) $TRAILERS ask for a Co-Authored-By trailer: the commit hooks refuse AI authorship
+        trailers, so the tab's commit fails. Say \"Never add a Co-Authored-By line\" instead. Nothing launched."
 case "$CWD" in /*) ;; *) die "--cwd must be absolute: $CWD" ;; esac
 [ -d "$CWD" ] || die "--cwd is not a directory: $CWD"
 if [ -n "$OUT" ]; then case "$OUT" in /*) ;; *) die "--out must be absolute: $OUT" ;; esac; fi

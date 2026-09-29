@@ -1350,6 +1350,20 @@ test('a bare #N placeholder refuses; one in backticks or a fenced block launches
   assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
 });
 
+test('a brief asking for a Co-Authored-By trailer refuses; a negated one or a bare mention launches', async () => {
+  await reset(NEW_TUI);
+  const bad = await writeBrief('brief-trailer.md', '- End the body with `Co-Authored-By: opencode <noreply@opencode.ai>`.\n');
+  const r = await runScript(baseArgs(bad));
+  assert.equal(r.code, 1, `${r.out}${r.err}`);
+  assert.match(r.err, /brief line\(s\) 6 ask for a Co-Authored-By trailer/);
+  assert.equal(await launched(), false);
+
+  await reset(NEW_TUI);
+  const ok = await writeBrief('brief-trailer-ok.md', '- Do NOT add `Co-Authored-By: opencode <noreply@opencode.ai>`.\n- Grep each commit for `Co-Authored-By` and report any.\n');
+  const r2 = await runScript(baseArgs(ok));
+  assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
+});
+
 test('--tools without task refuses and launches nothing', async () => {
   await reset(NEW_TUI);
   const r = await runScript([...baseArgs('brief-gt.md'), '--tools', 'read,grep,bash']);

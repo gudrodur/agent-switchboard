@@ -126,6 +126,22 @@ test('a relative --brief is refused', async () => {
   assert.match(r.err, /--brief must be absolute/);
 });
 
+test('the brief lint runs here too: a trailer or a bare #N placeholder refuses before any launch', async () => {
+  const trailer = path.join(stateDir, 'brief-trailer.md');
+  await fs.writeFile(trailer, '# Brief\n- End each body with `Co-Authored-By: opencode <noreply@opencode.ai>`.\n');
+  const r = await tab(['--title', 't', '--brief', trailer, '--model', MODEL, '--cwd', cwd]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /brief line\(s\) 2 ask for a Co-Authored-By trailer/);
+  assert.equal(await exists('launch-args'), false);
+
+  const ph = path.join(stateDir, 'brief-ph.md');
+  await fs.writeFile(ph, '# Brief\n- Commit as "fix: retry once (#N)".\n');
+  const r2 = await tab(['--title', 't', '--brief', ph, '--model', MODEL, '--cwd', cwd]);
+  assert.equal(r2.code, 1);
+  assert.match(r2.err, /brief line\(s\) 2 carry a bare #N placeholder/);
+  assert.equal(await exists('launch-args'), false);
+});
+
 test('no kitty remote control exits 2', async () => {
   await fs.writeFile(path.join(stateDir, 'nokitty'), '');
   const r = await tab(full());
