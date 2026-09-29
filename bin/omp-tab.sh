@@ -393,8 +393,9 @@ done
 #   * a line over 768 bytes: omp's read cuts a line there, so what ends it is
 #     never read (overseer-2 lost 18 minutes of log coverage on 2026-09-11 to a
 #     destination cut off mid-sentence);
-#   * a bare `#N` placeholder outside backticks or a fenced block: a tab copies
-#     it into a commit subject or PR body (this repo's 2e48705 shipped `(#N)`);
+#   * a bare `#N` placeholder outside backticks or a fenced block, and a line
+#     asking for a Co-Authored-By trailer (both in ../lib/brief-lint.sh, which
+#     opencode-tab.sh shares);
 #   * `--tools` without `task`: a seat that cannot fan out subagents does the
 #     breadth work itself, in its own context;
 #   * no parking line (`er lokið, ekkert í gangi`) and no `READY:` line: the
@@ -403,10 +404,13 @@ done
 LONG_LINES=$(LC_ALL=C awk 'length($0) > 768 { printf "%s%d", s, NR; s = "," }' "$BRIEF")
 [ -z "$LONG_LINES" ] || die "brief line(s) $LONG_LINES are over 768 bytes: omp's read cuts a line there, so the end of each is never read.
         Split them, one instruction per line. Nothing launched."
-PLACEHOLDERS=$(awk '/^[[:space:]]*```/ { f = !f; next } f { next }
-  { l = $0; gsub(/`[^`]*`/, "", l); if (l ~ /(^|[^[:alnum:]_&])#(N|NN|NNN|n|<n>)([^[:alnum:]_]|$)/) { printf "%s%d", s, NR; s = "," } }' "$BRIEF")
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/brief-lint.sh"
+PLACEHOLDERS=$(brief_placeholder_lines "$BRIEF")
 [ -z "$PLACEHOLDERS" ] || die "brief line(s) $PLACEHOLDERS carry a bare #N placeholder outside backticks: a tab copies it
         into a commit subject or PR body. Name the real issue number, or quote the example in backticks. Nothing launched."
+TRAILERS=$(brief_trailer_lines "$BRIEF")
+[ -z "$TRAILERS" ] || die "brief line(s) $TRAILERS ask for a Co-Authored-By trailer: the commit hooks refuse AI authorship
+        trailers, so the tab's commit fails. Say \"Never add a Co-Authored-By line\" instead. Nothing launched."
 if [ -n "$TOOLS" ] && ! printf ',%s,' "$TOOLS" | grep -q ',task,'; then
   die "--tools $TOOLS has no task: the tab cannot fan out subagents and does the breadth work in its own context.
         Add task to the list. Nothing launched."
