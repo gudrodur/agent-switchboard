@@ -948,6 +948,21 @@ test('an allowed default whose session file names another model is closed with e
   assert.equal(await wasSent(), true, 'the proof runs after the brief is sent (omp writes the file then)');
 });
 
+// agent-config#805 row 5: a reused pty's link names another window's session.
+// omp-tab-state.sh reports it state=unknown but still prints session=<path>;
+// the guard must not read that file's model_change row as this tab's model.
+test('a session the state script rejects as unknown is never read for the model', async () => {
+  await reset(NEW_TUI);
+  const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);
+  const st = await mkSessionEnv('anthropic/claude-opus-5');
+  const body = await fs.readFile(st.sess, 'utf8');
+  await fs.writeFile(st.sess, body.replace('"cwd":"/tmp/omptab-cwd"', '"cwd":"/tmp/another-tab"'));
+  const r = await runScript(baseArgs('brief-gt.md'), { OMP_TAB_PROVIDERS: prov, ...st.env });
+  assert.equal(r.code, 3, `${r.out}${r.err}`);
+  assert.match(r.err, /could not prove the launch model/, 'an unknown link proves nothing');
+  assert.doesNotMatch(r.err, /tab is running model anthropic/, "another session's model is not this tab's");
+});
+
 test('a session file naming the launched model passes', async () => {
   await reset(NEW_TUI);
   const prov = await allowProviders(['opencode-go/muse-spark-1.3-contributor']);

@@ -954,6 +954,11 @@ TAB_SESSION=""; TAB_MODEL=""; ABORTED=""
 for _ in $(seq 1 15); do
   _stout=$("$STATE_TAB" "$WID" 2>/dev/null || true)
   TAB_SESSION=$(printf '%s' "$_stout" | grep -o 'session=.*' | head -1 | sed 's/^session=//; s/ reason=.*$//')
+  # state=unknown still prints the path it rejected: a reused pty's link names
+  # another window's older session, and reading its model_change row closed a
+  # healthy launch with rc=3 (agent-config#805 row 5). Keep polling instead;
+  # the tab's own file replaces the link at its first persisted message.
+  case "$_stout" in *" state=unknown "*) TAB_SESSION="" ;; esac
   case "$TAB_SESSION" in ""|"none") TAB_SESSION="" ;;
     *) if first_turn_abort; then ABORTED=1; break; fi
        TAB_MODEL=$(grep -m1 -F '"model_change"' "$TAB_SESSION" 2>/dev/null | jq -r '.model // ""' 2>/dev/null) ;;
