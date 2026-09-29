@@ -764,6 +764,18 @@ LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
 # id list plus an unchanged pid — the same test `--list` uses — because a kitty
 # id can be REUSED by a new instance and a swapped pid means a stranger owns it.
 # A row this launcher wrote is not a holder: our own tabs are the point.
+# True when PID is this script or one of its ancestors: the seat that runs
+# this launcher inside a tab another seat launched sees that tab's row with the
+# other seat as launcher (agent-config#805 row 4). Walks /proc ppid links.
+is_ancestor() { # $1 = pid
+  local p=$$ n=0
+  while [ -n "$p" ] && [ "$p" != 0 ] && [ $n -lt 64 ]; do
+    [ "$p" = "$1" ] && return 0
+    p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)
+    n=$((n + 1))
+  done
+  return 1
+}
 slot_holders() {
   [ -s "$STATE" ] || return 0
   live_ids=$(kitty @ ls 2>/dev/null | jq -r '.[].tabs[].windows[].id' 2>/dev/null | tr '\n' ' ')
@@ -780,6 +792,7 @@ slot_holders() {
     # overseer carries the overseer as launcher, so it used to block its own
     # package launches (--slot-override "window 2 is my own seat", 2026-09-19).
     [ -n "${KITTY_WINDOW_ID:-}" ] && [ "$row_id" = "$KITTY_WINDOW_ID" ] && continue
+    is_ancestor "${2:-}" && continue
     printf '%s (launcher %s)' "$row_id" "$row_launcher"
   done < "$STATE"
   set +f

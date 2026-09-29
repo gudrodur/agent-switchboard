@@ -17,7 +17,7 @@
 import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -1119,11 +1119,24 @@ const slotStateFile = () => path.join(stateDir, `omp-tab-launched.${process.getu
 const writeRows = async (...rows) => {
   await fs.writeFile(slotStateFile(), rows.length ? `${rows.join('\n')}\n` : '');
 };
+// Another seat's tab: a live process that is NOT an ancestor of the launcher,
+// which skips its own ancestors (agent-config#805 row 4). The test runner's
+// pid is one, so a holder row needs a sibling. The stub window reports it.
+let holder;
+const useHolderWindow = async () => {
+  holder ??= spawn('/usr/bin/sleep', ['3600'], { stdio: 'ignore' });
+  await fs.writeFile(path.join(stateDir, 'pid'), String(holder.pid));
+  return holder.pid;
+};
+const useAncestorWindow = () => fs.writeFile(path.join(stateDir, 'pid'), String(process.pid));
+after(() => holder?.kill());
 
 test('another seat holding a live tab refuses the launch and names the holder', async () => {
   await reset(NEW_TUI);
-  await writeRows(`${WID} ${process.pid} @other-seat omp: their package`);
+  const pid = await useHolderWindow();
+  await writeRows(`${WID} ${pid} @other-seat omp: their package`);
   const r = await runScript(baseArgs('brief-gt.md'));
+  await useAncestorWindow();
   assert.equal(r.code, 1, `${r.out}${r.err}`);
   assert.match(r.err, /another seat holds the package-tab slot/);
   assert.match(r.err, new RegExp(WID), 'the live window id is named');
@@ -1400,8 +1413,20 @@ test("the caller's own window is not a slot holder, even when another seat launc
   assert.equal(own.code, 0, `${own.out}${own.err}`);
   assert.equal(await launched(), true);
   await reset(NEW_TUI);
-  await writeRows(`${WID} ${process.pid} @overseer-seat omp: supervisor seat`);
+  const pid = await useHolderWindow();
+  await writeRows(`${WID} ${pid} @overseer-seat omp: supervisor seat`);
   const other = await runScript(baseArgs('brief-gt.md'), { KITTY_WINDOW_ID: '5' });
+  await useAncestorWindow();
   assert.equal(other.code, 1, `${other.out}${other.err}`);
   assert.match(other.err, /another seat holds the package-tab slot/);
+});
+
+test("a tab whose process is the launcher's ancestor is not a slot holder, even without KITTY_WINDOW_ID", async () => {
+  // agent-config#805 row 4: the seat inside a tab another seat launched. The
+  // row's pid (the test runner) is an ancestor of the script.
+  await reset(NEW_TUI);
+  await writeRows(`${WID} ${process.pid} @overseer-seat omp: supervisor seat`);
+  const r = await runScript(baseArgs('brief-gt.md'), { KITTY_WINDOW_ID: '' });
+  assert.equal(r.code, 0, `${r.out}${r.err}`);
+  assert.equal(await launched(), true);
 });
