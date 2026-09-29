@@ -1,4 +1,4 @@
-# Brief lint shared by omp-tab.sh and opencode-tab.sh. Sourced, not run: each
+# Brief lint shared by omp-tab.sh, opencode-tab.sh and claude-tab.sh. Sourced, not run: each
 # function prints the offending line numbers of the brief, comma-separated, and
 # prints nothing when the brief is clean. The caller words the refusal.
 

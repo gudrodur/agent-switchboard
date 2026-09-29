@@ -1,10 +1,10 @@
 # Agent Switchboard
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="assets/switchboard-map-dark.svg"><img alt="Map of who can reach whom: the cross-platform channel bridges lead agents and delegated agents through a store on disk with a terminal fallback; both sides read shared files and the shared record." src="assets/switchboard-map-light.svg"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/switchboard-map-dark.svg"><img alt="Map of who can reach whom: the cross-platform channel bridges lead agents (Claude Code, Codex) and delegated agents through a store on disk with a terminal fallback; leads write plans, briefs and merges, delegated agents write reports and pull requests, and both sides read the shared files and the shared record." src="assets/switchboard-map-light.svg"></picture>
 
 ## What this is
 
-A file-backed mailbox with acks between agents on two runtimes on one machine. When the recipient has no mailbox consumer, the sender falls back to typing into the recipient's terminal and proving the text landed. A tab launcher opens delegated agents with their briefs and confirms they started.
+A mailbox with acks between agents on three runtimes (Claude Code, omp and Codex) on one machine, kept in a SQLite file on disk. When the recipient has no mailbox consumer, the sender falls back to typing into the recipient's terminal and proving the text landed. A tab launcher opens delegated agents with their briefs and confirms they started.
 
 ## The two channels
 
@@ -15,18 +15,18 @@ A file-backed mailbox with acks between agents on two runtimes on one machine. W
 
 | Line | Built on | Where |
 |---|---|---|
-| Cross-platform channel: the store | One JSON line per message, in files on disk. The sender resolves the recipient's window and waits for the ack row. | `bin/agent-send.mjs`, `lib/agent-mailbox.mjs`, `$AGENT_SWITCHBOARD_DIR/mailbox/*.jsonl` |
-| Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at turn start or while parked in omp, at each prompt in the host agent. | `hooks/omp/pre/mailbox.ts`, `hooks/claude/mailbox-inject.mjs` |
+| Cross-platform channel: the store | One row per message in a SQLite file on disk (`$AGENT_SWITCHBOARD_DIR/state.db`); JSONL files under `mailbox/` only while a legacy pin is set (see Store below). The sender resolves the recipient's window and waits for the ack row. | `bin/agent-send.mjs`, `lib/agent-mailbox.mjs`, `lib/store.mjs` |
+| Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at turn start or while parked in omp, at each prompt in Claude Code and in Codex. | `hooks/omp/pre/mailbox.ts`, `hooks/claude/mailbox-inject.mjs`, `hooks/codex/mailbox.mjs` |
 | Terminal if no ack | Terminal remote control: types the message into the window. Delivery is proven by a new inbound row in that tab's session file. | `bin/kitty-send.sh` |
 | Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. The Claude Code launcher passes the brief as the initial prompt, can turn Remote Control on, and proves the start from the session's own transcript. | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh` |
-| Read state | Not the screen but the disk: the window's process, its terminal, and the runtime's terminal-sessions file whose last row is the state. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
+| Read state | Not the screen but the disk: the window's process, its terminal, the runtime's terminal-sessions link to the session file, and that session file, whose last decisive row is the state. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
 | Files | Plain files every agent can read: plan, briefs, steers, reports, logs. | a directory the agents share |
 | Shared record | The `gh` command line: issues, pull requests, checks, merges. | `gh` |
 | Approval path | The host agent's own hold screen for a message between sessions in different permission modes. | The host agent's settings file |
 
 ## Install
 
-The hooks below plug into the host-agent and omp runtimes, and the sender, fallback and launcher drive kitty; all three must be present for the full channel, while mailbox-only mode works anywhere node runs.
+The hooks below plug into the Claude Code, Codex and omp runtimes, and the sender, fallback and launcher drive kitty; all three must be present for the full channel, while mailbox-only mode works anywhere node runs.
 
 ```sh
 git clone <repo-url> ~/agent-switchboard
@@ -88,27 +88,29 @@ omp runs hooks on Bun. Bun 1.3.14 loads the symlinked hook, including its `.ts` 
 ### Sending and launching
 
 ```sh
-# Steer another agent; exit 0 means its consumer acked, exit 3 means queued, do not resend.
-agent-send.mjs --to <window-id|title-substring|mailbox-key> --text "one line" [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
-agent-send.mjs --read                       # print and ack this session's inbox rows
+# Steer another agent; exit 0 means acked or proven, 3 means not delivered yet (do not resend),
+# 10 means typed but not proven (look at the window before resending); any other code is kitty-send.sh's.
+agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text "one line" | --file /abs/path) [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
+agent-send.mjs --read [--as <session-id>]   # print and ack this session's inbox rows
 agent-send.mjs --cancel --to <key> --id <r> # withdraw one queued row
 
 # Open a titled tab with its brief and confirm it started (exit 2 means no terminal remote control).
-omp-tab.sh --title "omp: <what this review is>" --brief /abs/brief.md [--out /abs/out.md] [--cwd /abs/repo]
+omp-tab.sh --title "omp: <what this review is>" --brief /abs/brief.md [--out /abs/out.md] [--overwrite] [--cwd /abs/repo]
            [--profile NAME | --no-profile] [--model PROVIDER/NAME] [--fallback]
-           [--tools a,b,c] [--thinking low|medium|high] [--mcp full]
+           [--tools a,b,c] [--thinking low|medium|high|…]
+           [--no-ground-truth] [--mcp full] [--slot-override "<reason>"] [--seat overseer|supervisor]
 omp-tab.sh --list
 omp-tab.sh --close <window-id>
 
 # The same for the opencode TUI and Claude Code: --model is required, and a session on another model closes the tab (exit 3).
-opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo]
-claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md --model opus|sonnet|haiku|fable|claude-ID [--rc [NAME]] [--out /abs/out.md] [--cwd /abs/repo]
+opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
+claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md --model opus|sonnet|haiku|fable|claude-ID [--rc [NAME]] [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
 
 # What a tab is doing, read from disk, never the screen.
 omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]
 ```
 
-`--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A Claude Code tab is the exception (#38): its composer swallows the carriage return of a long one-line send, so kitty-send types the text alone and then a lone carriage return (a second one at most), and proves it by a new user row carrying the text in the session's transcript, found through `~/.claude/sessions/<pid>.json`. A launch checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key: the serve probe is itself a session-less run, executed with no window id and throwaway store paths, so it leaves no beacon or state behind. A launch whose new tab writes an aborted record with no assistant turn that did work (first-turn abort, agent-config#696) is retried once automatically; a second abort exits 3 with the window id.
+`--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A Claude Code tab is the exception (#38): its composer swallows the carriage return of a long one-line send, so kitty-send types the text alone and then a lone carriage return (a second one at most), and proves it by a new user row carrying the text in the session's transcript, found through `~/.claude/sessions/<pid>.json`. An omp launch (`omp-tab.sh` only) checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key: the serve probe is itself a session-less run, executed with no window id and throwaway store paths, so it leaves no beacon or state behind. A launch whose new tab writes an aborted record with no assistant turn that did work (first-turn abort, agent-config#696) is retried once automatically; a second abort exits 3 with the window id.
 
 ```sh
 export OMP_TAB_KEY_COMMAND='...'   # stdout emits the export line the tab evals before exec
@@ -121,10 +123,11 @@ Every variable, its default, and what reads it — taken from the code, not from
 | Variable | Default | Used by |
 |---|---|---|
 | `AGENT_SWITCHBOARD_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-switchboard` | `lib/presence.mjs`: root for presence and mailbox |
-| `AGENT_SWITCHBOARD_PRESENCE_FILE` | `$AGENT_SWITCHBOARD_DIR/presence.json` | `lib/presence.mjs`: the live-beacon file |
+| `AGENT_SWITCHBOARD_PRESENCE_FILE` | `$AGENT_SWITCHBOARD_DIR/presence.json` | `lib/presence.mjs`: legacy live-beacon file, imported once into the store; beacons live in `state.db` (`presence_beacons`) unless this pin is set |
 | `AGENT_SWITCHBOARD_DB` | `$AGENT_SWITCHBOARD_DIR/state.db` | `lib/store.mjs`: the SQLite store (WAL mode) holding the mailbox and presence when no legacy file override below is set |
 | `AGENT_SWITCHBOARD_MAILBOX_DIR` | `$AGENT_SWITCHBOARD_DIR/mailbox` | `lib/agent-mailbox.mjs`: legacy JSONL mailbox, one file per recipient (`AGENT_MAILBOX_DIR` still honoured as the older name); used while set or while a `{dir}` override is passed |
 | `AGENT_SWITCHBOARD_SENDER` | `another agent session` | `bin/agent-send.mjs`, `bin/kitty-send.sh`: the sender label on terminal-delivered notes |
+| `AGENT_SEND_IDLE_WAIT_S` | `5` (seconds) | `bin/agent-send.mjs`: the ack wait for a recipient whose window title shows it idle (busy keeps 120 s; `--deadline` wins) |
 | `AGENT_SWITCHBOARD_SEND` | `bin/kitty-send.sh` beside `agent-send.mjs` | `bin/agent-send.mjs`: the fallback sender (`AGENT_SEND_KITTY_SEND` wins when set) |
 | `OMP_TAB_KEY_COMMAND` / `KEY_COMMAND` | unset (no key step; the tab runs `exec omp` directly) | `bin/omp-tab.sh`: when set, the tab evals its output before exec, and balance checks use it |
 | `OMP_TAB_PROVIDERS` | `<checkout>/config/omp-providers.json` | `bin/omp-tab.sh`: provider table for the preflight and fallback walk |
@@ -137,15 +140,19 @@ Every variable, its default, and what reads it — taken from the code, not from
 | `CLAUDE_TAB_BIN` | `claude` | `bin/claude-tab.sh`: the command the tab execs |
 | `CLAUDE_TAB_PROJECTS` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects` | `bin/claude-tab.sh`: Claude Code's transcripts, read-only, for the new session file that proves the start, its model and (with `--rc`) its `bridge-session` row |
 | `CLAUDE_TAB_CONFIG` | `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json` | `bin/claude-tab.sh`: Claude Code's user config, read-only, for folder trust (the cwd or an ancestor must be trusted, or nothing is launched) |
+| `OMP_MODEL_AUDIT` | `$HOME/.claude/scripts/omp-model-audit.mjs` | `bin/omp-tab.sh`: the config gate run before a model is resolved; skipped when the file is absent |
+| `AGENT_CONFIG_HOME` | `$HOME/agent-config`, else `$HOME/.claude` | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh`: where `scripts/task-claim.mjs` lives |
+| `OMP_TAB_TASK_CLAIM` | `$AGENT_CONFIG_HOME/scripts/task-claim.mjs` | the three launchers: the brief-claim CLI; a missing one is a loud skip |
+| `CLAUDE_SESSION_ID` | unset, then `KITTY_WINDOW_ID` | the three launchers: the launcher id written into each state row |
 | `OMP_TAB_STATE_DIR` | `$HOME/.omp/agent/terminal-sessions` | `bin/omp-tab-state.sh`: window-to-session links (omp's own directory — omp writes them, not this repo) |
 | `OMP_TAB_STATE_SESSIONS_DIR` | `$HOME/.omp/agent/sessions` | `bin/omp-tab-state.sh`: canonical sessions dir the link arbitration prefers |
 | `CLAUDE_CODE_SESSION_ID` | null (address by cwd only) | `hooks/claude/mailbox-inject.mjs`, `bin/agent-send.mjs`: host-agent session identity |
 | `OMP_SESSION_ID` | null (current key only) | `hooks/omp/pre/mailbox.ts`: omp session identity, drains every key of the session |
-| `KITTY_WINDOW_ID` | null (cwd join only) | both hooks, `lib/agent-mailbox.mjs`: exact window-to-session routing |
+| `KITTY_WINDOW_ID` | null (cwd join only) | the Claude Code and omp hooks, `lib/agent-mailbox.mjs`: exact window-to-session routing (the Codex hook records no window id) |
 
 Two warnings, both load-bearing. `config/omp-providers.json` holds EXAMPLE providers with real public endpoints: a launch with that table unchanged bills those example accounts, so replace its rows with your own before launching anything real. `bin/omp-tab-state.sh` reads omp's own `$HOME/.omp/agent/terminal-sessions` and `sessions` whatever `AGENT_SWITCHBOARD_DIR` says — only the mailbox and presence live under the switchboard directory, because only this repo writes them.
 
-Timers, for orientation: presence beacons go stale after 20 minutes (`PRESENCE_STALE_MS`, never restated), or at once when the beacon carries a writer pid that is dead (`isLiveBeacon` in `lib/presence.mjs`, which the mailbox readers import); the sender waits 120 s for an ack by default (`--deadline N`, unbounded for `--queue`; a busy target acks only at its next tool boundary, and a kitty fallback under `--now` would discard the tool result it was waiting for); the parked-tab fallback poll ticks every 5 s (`IDLE_POLL_MS`); the queued terminal waiter heartbeats every 5 min and never times out unless `--deadline` caps it.
+Timers, for orientation: presence beacons go stale after 20 minutes (`PRESENCE_STALE_MS`, never restated), or at once when the beacon carries a writer pid that is dead (`isLiveBeacon` in `lib/presence.mjs`, which the mailbox readers import); the sender waits 120 s for an ack from a busy recipient and 5 s from one whose window title shows it idle (`AGENT_SEND_IDLE_WAIT_S`; `--deadline N` always wins, unbounded for `--queue`; a busy target acks only at its next tool boundary, and a kitty fallback under `--now` would discard the tool result it was waiting for); the parked-tab fallback poll ticks every 5 s (`IDLE_POLL_MS`); the queued terminal waiter heartbeats every 5 min and never times out unless `--deadline` caps it.
 
 ## Store (SQLite) and retention
 

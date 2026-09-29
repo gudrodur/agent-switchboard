@@ -24,7 +24,7 @@
 // text block lacks the parking phrase, class parked-with-job-alive when it
 // carries it.
 //
-// Usage: node scripts/omp-idle-audit.mjs <session.jsonl>... [--format=json]
+// Usage: node bin/omp-idle-audit.mjs <session.jsonl>... [--format=json]
 //   one file:   text is one line per finding; json keeps the findings array.
 //   many files: text prefixes each finding with the file basename and prints
 //               one summary line per file plus a total line; json becomes

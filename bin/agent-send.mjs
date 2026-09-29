@@ -217,7 +217,7 @@ const main = (argv) => {
   // before falling back to a kitty-send that then could not submit either).
   // The wait therefore follows the recipient's runtime, detected AFTER
   // resolveRecipient (below): a Claude Code recipient that is idle falls back
-  // at once (AGENT_SEND_CLAUDE_IDLE_WAIT_S, default 5 s, so one late-arriving
+  // at once (AGENT_SEND_IDLE_WAIT_S, default 5 s, so one late-arriving
   // ack still lands), a busy one keeps 120 s, and an explicit --deadline
   // always wins. --queue stays unbounded unless --deadline caps it.
   const defaultWaitMs = priority === 'queue' ? null : 120_000;
