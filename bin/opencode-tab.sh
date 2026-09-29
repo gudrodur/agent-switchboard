@@ -137,6 +137,18 @@ LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
 # The one-slot gate (#699), the same test as omp-tab.sh's slot_holders: a live
 # row (id present, pid unchanged) whose launcher is not this one and which is
 # not the caller's own window.
+# True when PID is this script or one of its ancestors: the seat that runs
+# this launcher inside a tab another seat launched sees that tab's row with the
+# other seat as launcher (agent-config#805 row 4). Walks /proc ppid links.
+is_ancestor() { # $1 = pid
+  local p=$$ n=0
+  while [ -n "$p" ] && [ "$p" != 0 ] && [ $n -lt 64 ]; do
+    [ "$p" = "$1" ] && return 0
+    p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)
+    n=$((n + 1))
+  done
+  return 1
+}
 slot_holders() {
   [ -s "$STATE" ] || return 0
   local live_ids row_launcher
@@ -150,6 +162,7 @@ slot_holders() {
     [ "$(win_pid "$1")" = "${2:-}" ] || continue
     [ "$row_launcher" = "$LAUNCHER" ] && continue
     [ -n "${KITTY_WINDOW_ID:-}" ] && [ "$1" = "$KITTY_WINDOW_ID" ] && continue
+    is_ancestor "${2:-}" && continue
     printf '%s (launcher %s) ' "$1" "$row_launcher"
   done < "$STATE"
   set +f

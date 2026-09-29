@@ -13,6 +13,11 @@
 #   --rc [NAME]  start the session with Remote Control on, named NAME (default:
 #                the --title), and require the bridge-session row as proof
 #
+# --cwd must be a folder Claude Code trusts, itself or through a folder above
+# it; an untrusted one is refused (exit 1). A throwaway folder under /tmp is
+# not trusted: make it under a trusted tree, e.g. mktemp -d ~/Development/.x-XXXX.
+# --dangerously-skip-permissions does not skip the trust prompt (2026-09-29).
+#
 # Exit codes, the same table as omp-tab.sh:
 #   0  launched AND proven: a new Claude Code session file in --cwd whose first
 #      assistant turn ran on --model (and, with --rc, a bridge-session row)
@@ -121,7 +126,7 @@ trusted() {
 }
 if [ -r "$CLAUDE_JSON" ]; then
   trusted || die "Claude Code has not trusted $CWD or any folder above it, so the tab would stop at the trust prompt — nothing launched.
-        Run claude there once and accept, or launch in a trusted folder."
+        Run claude there once and accept, or launch in a trusted folder (a throwaway one: mktemp -d under a trusted tree)."
 else
   note "no Claude Code config at $CLAUDE_JSON — folder trust not checked"
 fi
@@ -135,6 +140,18 @@ LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
 # The one-slot gate (#699), the same test as omp-tab.sh's slot_holders: a live
 # row (id present, pid unchanged) whose launcher is not this one and which is
 # not the caller's own window.
+# True when PID is this script or one of its ancestors: the seat that runs
+# this launcher inside a tab another seat launched sees that tab's row with the
+# other seat as launcher (agent-config#805 row 4). Walks /proc ppid links.
+is_ancestor() { # $1 = pid
+  local p=$$ n=0
+  while [ -n "$p" ] && [ "$p" != 0 ] && [ $n -lt 64 ]; do
+    [ "$p" = "$1" ] && return 0
+    p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)
+    n=$((n + 1))
+  done
+  return 1
+}
 slot_holders() {
   [ -s "$STATE" ] || return 0
   local live_ids row_launcher
@@ -148,6 +165,7 @@ slot_holders() {
     [ "$(win_pid "$1")" = "${2:-}" ] || continue
     [ "$row_launcher" = "$LAUNCHER" ] && continue
     [ -n "${KITTY_WINDOW_ID:-}" ] && [ "$1" = "$KITTY_WINDOW_ID" ] && continue
+    is_ancestor "${2:-}" && continue
     printf '%s (launcher %s) ' "$1" "$row_launcher"
   done < "$STATE"
   set +f
