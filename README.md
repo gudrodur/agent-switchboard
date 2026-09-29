@@ -18,7 +18,7 @@ A file-backed mailbox with acks between agents on two runtimes on one machine. W
 | Cross-platform channel: the store | One JSON line per message, in files on disk. The sender resolves the recipient's window and waits for the ack row. | `bin/agent-send.mjs`, `lib/agent-mailbox.mjs`, `$AGENT_SWITCHBOARD_DIR/mailbox/*.jsonl` |
 | Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at turn start or while parked in omp, at each prompt in the host agent. | `hooks/omp/pre/mailbox.ts`, `hooks/claude/mailbox-inject.mjs` |
 | Terminal if no ack | Terminal remote control: types the message into the window. Delivery is proven by a new inbound row in that tab's session file. | `bin/kitty-send.sh` |
-| Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. | `bin/omp-tab.sh`, `bin/opencode-tab.sh` |
+| Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. The Claude Code launcher passes the brief as the initial prompt, can turn Remote Control on, and proves the start from the session's own transcript. | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh` |
 | Read state | Not the screen but the disk: the window's process, its terminal, and the runtime's terminal-sessions file whose last row is the state. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
 | Files | Plain files every agent can read: plan, briefs, steers, reports, logs. | a directory the agents share |
 | Shared record | The `gh` command line: issues, pull requests, checks, merges. | `gh` |
@@ -100,8 +100,9 @@ omp-tab.sh --title "omp: <what this review is>" --brief /abs/brief.md [--out /ab
 omp-tab.sh --list
 omp-tab.sh --close <window-id>
 
-# The same for the opencode TUI: --model is required, and a session on another model closes the tab (exit 3).
+# The same for the opencode TUI and Claude Code: --model is required, and a session on another model closes the tab (exit 3).
 opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo]
+claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md --model opus|sonnet|haiku|fable|claude-ID [--rc [NAME]] [--out /abs/out.md] [--cwd /abs/repo]
 
 # What a tab is doing, read from disk, never the screen.
 omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]
@@ -133,6 +134,9 @@ Every variable, its default, and what reads it — taken from the code, not from
 | `OPENCODE_TAB_LAUNCH` | `<agent-config>/scripts/opencode-launch.sh` | `bin/opencode-tab.sh`: the command the tab execs (exports the Cloudflare MCP tokens, then runs opencode) |
 | `OPENCODE_TAB_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db` | `bin/opencode-tab.sh`: opencode's store, read-only, for the session row that proves the start and its model |
 | `OPENCODE_TAB_PRESENCE` | unset: `lib/presence.mjs` on the caller's store | `bin/opencode-tab.sh`: a command printing `{"beacons":[...]}` for the start proof, in place of the lib |
+| `CLAUDE_TAB_BIN` | `claude` | `bin/claude-tab.sh`: the command the tab execs |
+| `CLAUDE_TAB_PROJECTS` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects` | `bin/claude-tab.sh`: Claude Code's transcripts, read-only, for the new session file that proves the start, its model and (with `--rc`) its `bridge-session` row |
+| `CLAUDE_TAB_CONFIG` | `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json` | `bin/claude-tab.sh`: Claude Code's user config, read-only, for folder trust (the cwd or an ancestor must be trusted, or nothing is launched) |
 | `OMP_TAB_STATE_DIR` | `$HOME/.omp/agent/terminal-sessions` | `bin/omp-tab-state.sh`: window-to-session links (omp's own directory — omp writes them, not this repo) |
 | `OMP_TAB_STATE_SESSIONS_DIR` | `$HOME/.omp/agent/sessions` | `bin/omp-tab-state.sh`: canonical sessions dir the link arbitration prefers |
 | `CLAUDE_CODE_SESSION_ID` | null (address by cwd only) | `hooks/claude/mailbox-inject.mjs`, `bin/agent-send.mjs`: host-agent session identity |
