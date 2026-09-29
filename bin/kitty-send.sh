@@ -22,8 +22,9 @@
 # omp tab, or the pty link is unproven — and its verdict is exit 10
 # ("typed, not proven submitted"), never "delivered".
 # Exit codes:
-#   0  sent AND proven: a new role:user row in the tab's session file
-#      (the only proof that names the tab receiving the text)
+#   0  sent AND proven: a new role:user row in the tab's session file, or
+#      for a Claude Code tab a new user row carrying the text in its
+#      transcript (the only proofs that name the tab receiving the text)
 #   1  usage / precondition error (no kitty remote control, no such window)
 #   3  could not prove it landed — sent but unconfirmed, or the screen could
 #      not be read to attempt the proof (nothing is retried for you)
@@ -165,6 +166,43 @@ tab_state_of() { # $1 = window id
 tab_state_json() { # $1 = window id
   [ -x "$STATE_SH" ] || return 1
   "$STATE_SH" "$1" --json 2>/dev/null || return 1
+}
+
+# CLAUDE CODE TABS (#38). A Claude Code window is not an omp tab, so the state
+# script above answers unknown for it, but it has its own state on disk: the
+# `claude` process writes <config>/sessions/<pid>.json (sessionId, cwd, status
+# busy|idle) and every turn to <config>/projects/<cwd with every character
+# outside [A-Za-z0-9-] as '-'>/<sessionId>.jsonl. So a Claude tab is proved the
+# way an omp tab is: a NEW user row in that transcript, past the pre-send line
+# count, carrying the start of this message. Its title is no help: it reads
+# "✳ …" idle and "◐ …" busy, no braille spinner, so the status field is what
+# the busy gate reads for it.
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CLAUDE_SESSIONS_DIR="${KITTY_SEND_CLAUDE_SESSIONS_DIR:-$CLAUDE_DIR/sessions}"
+CLAUDE_PROJECTS_DIR="${KITTY_SEND_CLAUDE_PROJECTS_DIR:-$CLAUDE_DIR/projects}"
+# The session record of the claude process in this window, or exit 1.
+claude_session_json() { # $1 = window id
+  local pid f
+  pid=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$1" '
+    .[].tabs[].windows[] | select(.id == $id) | .foreground_processes[]?
+    | select((.cmdline[0] // "") | test("(^|/)claude$")) | .pid' 2>/dev/null | head -1)
+  [ -n "$pid" ] || return 1
+  f="$CLAUDE_SESSIONS_DIR/$pid.json"
+  jq -e '.sessionId and .cwd' "$f" >/dev/null 2>&1 || return 1
+  cat "$f"
+}
+claude_state_of() { # $1 = window id; busy|idle|unknown
+  local j
+  j=$(claude_session_json "$1") || { printf 'unknown'; return 0; }
+  case "$(printf '%s' "$j" | jq -r '.status // ""' 2>/dev/null)" in
+    busy) printf 'busy' ;; idle) printf 'idle' ;; *) printf 'unknown' ;;
+  esac
+}
+claude_transcript_of() { # $1 = session json
+  local sid cwd
+  sid=$(printf '%s' "$1" | jq -r '.sessionId')
+  cwd=$(printf '%s' "$1" | jq -r '.cwd')
+  printf '%s/%s/%s.jsonl' "$CLAUDE_PROJECTS_DIR" "$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9-]/-/g')" "$sid"
 }
 usage() {
   cat <<'KITTY_SEND_USAGE'
@@ -346,6 +384,10 @@ target_busy() {  # $1 = title, $2 = window id
     busy) return 0 ;;
     idle) return 1 ;;
     exited) die "window $2 has exited (its omp session file ends in session_exit) — nothing was sent" 1 ;;
+  esac
+  case "$(claude_state_of "$2")" in
+    busy) return 0 ;;
+    idle) return 1 ;;
   esac
   title_busy "$1" || return 1
   return 0
@@ -608,7 +650,7 @@ fi
 # Idle at the send or not: the busy-transition proof in the poll
 # loop below only means something when the target was idle here. A target that
 # was already busy (--now) being busy afterwards proves nothing about this send.
-if title_busy "$title"; then WAS_BUSY_BEFORE_SEND=1; else WAS_BUSY_BEFORE_SEND=0; fi
+if title_busy "$title" || [ "$(claude_state_of "$WID")" = busy ]; then WAS_BUSY_BEFORE_SEND=1; else WAS_BUSY_BEFORE_SEND=0; fi
 
 # Proof by state: where the tab's session file is linked, the post-send poll
 # waits for a NEW role:user message row past this line count, and the echo
@@ -624,6 +666,29 @@ if state_json=$(tab_state_json "$WID"); then
     if [ -n "$TAB_SESSION" ] && [ -f "$TAB_SESSION" ]; then STATE_KNOWN=1; fi
   fi
 fi
+# A Claude Code tab (see CLAUDE CODE TABS above). Its transcript may not exist
+# yet in a fresh session, which writes it with the first prompt: that is line
+# count 0, not unknown.
+CLAUDE_TAB=0; CLAUDE_HEAD=""
+if [ "$STATE_KNOWN" = 0 ] && claude_json=$(claude_session_json "$WID"); then
+  TAB_SESSION=$(claude_transcript_of "$claude_json")
+  TAB_LINES=0
+  [ -f "$TAB_SESSION" ] && TAB_LINES=$(wc -l < "$TAB_SESSION")
+  STATE_KNOWN=1; CLAUDE_TAB=1
+  CLAUDE_HEAD=$(printf '%s' "$TEXT" | cut -c1-40 | tr -d '[:space:]')
+fi
+# Does a user row past the pre-send count carry this message's start? The
+# text match is what keeps a tool result or a task notification (also
+# type:user rows) from counting as this send.
+claude_row_landed() {
+  tail -n "+$((TAB_LINES + 1))" "$TAB_SESSION" 2>/dev/null \
+    | jq -r 'select(.type == "user") | .message.content
+             | if type == "string" then . else ([.[]? | .text? // empty] | join(" ")) end' 2>/dev/null \
+    | tr -d '[:space:]' | grep -qF -- "$CLAUDE_HEAD"
+}
+# Seconds after the first lone \r before the second (see THE send). A test
+# seam as well.
+CLAUDE_ENTER_AFTER="${KITTY_SEND_CLAUDE_ENTER_AFTER:-3}"
 
 # Proof to look for. Default to the tail of the message: distinctive enough to be
 # this send, and short enough not to be diluted.
@@ -753,8 +818,28 @@ if [ "$STATE_KNOWN" = 0 ] && printf '%s' "$before_screen" | grep -qF -- '[Pasted
   fi
 fi
 
-# THE send. Text and carriage return in ONE call — see the header. Never split.
-kitty @ send-text --match "id:$WID" "$TEXT"$'\r' 2>/dev/null || true
+# THE send. Text and carriage return in ONE call — see the header. Never split,
+# except into a Claude Code tab (CLAUDE_ENTERS below), which has no steering
+# queue for a lone \r to enqueue an empty message into.
+#
+# Measured 2026-09-29 on a haiku Claude tab (#38): a long one-line burst is
+# taken as a paste. With its \r in the same call, that \r AND the next lone
+# \r are both swallowed, at 1, 3, 5 and 8 s after the burst alike; only a
+# second lone \r submits. The text alone, then one lone \r a second later,
+# submits on that first \r. A short message submits either way. `send-key
+# enter` submits nothing, so press_enter is not used for this.
+CLAUDE_ENTERS=0
+if [ "$CLAUDE_TAB" = 1 ] && [ "$SLASH_SEND" = 0 ]; then
+  kitty @ send-text --match "id:$WID" "$TEXT" 2>/dev/null || true
+  sleep 1
+  if ! claude_row_landed; then
+    kitty @ send-text --match "id:$WID" $'\r' 2>/dev/null || true
+    CLAUDE_ENTERS=1
+  fi
+else
+  kitty @ send-text --match "id:$WID" "$TEXT"$'\r' 2>/dev/null || true
+fi
+LAST_ENTER_AT=$(date +%s)
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 confirmed=0
@@ -772,8 +857,22 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   # tab receiving the text. Runs in place of every echo proof below, never
   # beside them: with a linked session file the screen cannot add evidence.
   if [ "$STATE_KNOWN" = 1 ]; then
-    if tail -n "+$((TAB_LINES + 1))" "$TAB_SESSION" 2>/dev/null | grep -q '"role":"user"'; then
+    if [ "$CLAUDE_TAB" = 1 ]; then
+      if claude_row_landed; then
+        confirmed=1; where="proved by transcript row (a new user prompt with this text reached the Claude Code session's transcript)"; break
+      fi
+    elif tail -n "+$((TAB_LINES + 1))" "$TAB_SESSION" 2>/dev/null | grep -q '"role":"user"'; then
       confirmed=1; where="proved by session row (a new role:user message reached the tab's session file)"; break
+    fi
+    # One more lone \r, at most, if the transcript still shows no prompt:
+    # a composer that swallowed the first. An Enter in an empty Claude Code
+    # composer does nothing, so a first \r that did submit, with its row
+    # slow to land (UserPromptSubmit hooks run first), costs nothing.
+    if [ "$CLAUDE_ENTERS" = 1 ] \
+       && [ "$(( $(date +%s) - LAST_ENTER_AT ))" -ge "$CLAUDE_ENTER_AFTER" ]; then
+      kitty @ send-text --match "id:$WID" $'\r' 2>/dev/null || true
+      CLAUDE_ENTERS=2
+      note "no prompt row in window $WID's transcript yet: sent a second lone Enter"
     fi
     # A slash command runs in the terminal client and writes no session row
     # (measured 2026-09-12: four /join sends reported "no new role:user row"
@@ -883,6 +982,8 @@ if [ "$STATE_KNOWN" = 1 ] && [ "$WAS_BUSY_BEFORE_SEND" = 1 ]; then
   end_state="unknown"
   if end_json=$(tab_state_json "$WID"); then
     end_state=$(printf '%s' "$end_json" | jq -r '.state' 2>/dev/null)
+  elif [ "$CLAUDE_TAB" = 1 ]; then
+    end_state=$(claude_state_of "$WID")
   fi
   if title_busy "$end_title" || [ "$end_state" = "busy" ]; then
     note "sent to window $WID while it was mid-turn (--now); still mid-turn after ${TIMEOUT}s, so the message is pending in its steering queue — no new role:user row can reach its session file until the tool boundary ($TAB_SESSION, was $TAB_LINES lines)."
@@ -897,7 +998,11 @@ if [ "$SLASH_SEND" = 1 ]; then
   note "window for the command's effect before sending it again."
   exit 3
 fi
-if [ "$STATE_KNOWN" = 1 ]; then
+if [ "$CLAUDE_TAB" = 1 ]; then
+  _pressed=""; [ "$CLAUDE_ENTERS" = 0 ] || _pressed=" and pressed $CLAUDE_ENTERS lone Enter(s)"
+  note "sent to window $WID (a Claude Code tab)${_pressed}, but no new user prompt with this text reached its transcript within ${TIMEOUT}s ($TAB_SESSION, was $TAB_LINES lines)."
+  note "The text may still sit in its composer: look at the window before sending again."
+elif [ "$STATE_KNOWN" = 1 ]; then
   note "sent to window $WID but no new role:user row reached its session file within ${TIMEOUT}s ($TAB_SESSION, was $TAB_LINES lines)."
 else
   note "sent to window $WID but could not observe it on screen within ${TIMEOUT}s."
