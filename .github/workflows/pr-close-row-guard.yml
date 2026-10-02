@@ -5,12 +5,14 @@
 #
 # GitHub reads a closing keyword (close/closes/closed, fix/fixes/fixed,
 # resolve/resolves/resolved) anywhere in a PR description as closing the WHOLE
-# issue on merge. Two shapes close one by accident, and this check fails both:
+# issue on merge. Three shapes close one by accident, and this check fails all three:
 #   - a keyword + ref + `row(s)`: "Fixes #914 row 1" meant one row and closed
 #     all of #914 (agent-switchboard#28, 2026-09-27);
 #   - a past-tense keyword mid-sentence: "#28 closed #914 on merge" is
 #     narration, and it closes #914 too. A close that is meant sits at the start
 #     of its own line ("Fixes #12"); code spans are ignored, like GitHub does.
+#   - a keyword in any tense after a negation or inside quotes: "Does NOT
+#     close #150" closed samtak-vefur #150 twice (agent-config#1048).
 #
 # The dev machine's PreToolUse hook (agent-config scripts/pr-close-row-hook.mjs)
 # refuses the same shapes before a PR is posted, but only in Claude Code
@@ -35,7 +37,7 @@ jobs:
   guard:
     runs-on: ${{ fromJSON(vars.GUARD_RUNNER_LABELS || '["ubuntu-slim"]') }}
     steps:
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -58,6 +60,21 @@ jobs:
             }
             return null;
           };
+          const ANY_CLOSE_RE = /\b(?:close[sd]?|fix(?:e[sd]?)?|resolve[sd]?)(?:[ \t]*:)?[ \t]+(?:[\w.-]+\/[\w.-]+)?#\d+\b/gi;
+          const NEGATION_LEAD_RE = /(?:\b(?:not|never|without|no[ \t]+longer)|n[\x27\u2019]t)\**(?:[ \t]+[\w\x27\u2019]+){0,2}[ \t]*\**[ \t]*$/i;
+          const findDisclaimedClose = (body) => {
+            const text = body.replace(CODE_RE, (c) => (c.startsWith("```") ? "" : "x"));
+            for (const line of text.split("\n")) {
+              const quoted = [...line.matchAll(/"[^"]*"|\u201c[^\u201d]*\u201d/g)].map((q) => [q.index, q.index + q[0].length]);
+              ANY_CLOSE_RE.lastIndex = 0;
+              for (let m = ANY_CLOSE_RE.exec(line); m !== null; m = ANY_CLOSE_RE.exec(line)) {
+                const end = m.index + m[0].length;
+                if (NEGATION_LEAD_RE.test(line.slice(0, m.index))) return m[0];
+                if (quoted.some(([a, b]) => a < m.index && end < b)) return m[0];
+              }
+            }
+            return null;
+          };
           const body = process.env.PR_BODY ?? "";
           const row = CLOSE_ROW_RE.exec(body);
           if (row) {
@@ -73,6 +90,14 @@ jobs:
             console.error("   matched: " + said);
             console.error("   rule:    it reads as narration, but GitHub closes that issue when this PR merges.");
             console.error("   fix:     write `refs #n`; if closing IS meant, put `Fixes #n` at the start of its own line.");
+            process.exit(1);
+          }
+          const disclaimed = findDisclaimedClose(body);
+          if (disclaimed) {
+            console.error("⛔ PR description puts a closing keyword before an issue ref inside a negation or a quote.");
+            console.error("   matched: " + disclaimed);
+            console.error("   rule:    GitHub ignores the negation and the quote marks and closes that issue when this PR merges.");
+            console.error("   fix:     write `refs #n`, or keep the keyword away from the ref; a quoted keyword can go in a code span.");
             process.exit(1);
           }
           console.log("no accidental closing keyword in the PR description");
