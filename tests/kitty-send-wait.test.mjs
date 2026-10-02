@@ -18,7 +18,7 @@
 import './helpers/isolate-setup.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -121,6 +121,39 @@ test('--queue --deadline N dies at N with exit 5 semantics, nothing sent', async
   await until(pidGone, 'the waiter removed its pid file on exit');
   const log = await readLog();
   assert.doesNotMatch(log, /delivered/);
+});
+
+// ---- verdict line: every way the waiter ends leaves one in the log ----------
+// The wrapper removes the pid file however the waiter ends, so without a line
+// of its own a waiter that died silently (agent-config#1043 row 1: the log
+// stopped at a heartbeat, no pid file, nothing delivered) read the same as one
+// that sent. The last line of the log is the verdict.
+
+const lastLine = async () => (await readLog()).trimEnd().split('\n').at(-1);
+
+test('a waiter that ends on its own logs its exit code last', async () => {
+  await runScript(['--to', WID, '--text', 'hi', '--queue', '--deadline', '2']);
+  await until(pidGone, 'the waiter removed its pid file on exit');
+  assert.match(await lastLine(), /^kitty-send: queued waiter exit rc=5 at \d\d:\d\d:\d\d$/);
+});
+
+test('a waiter killed from outside still logs an exit line, not a heartbeat', async () => {
+  await runScript(['--to', WID, '--text', 'hi', '--queue'], { KITTY_SEND_HEARTBEAT_S: '1' });
+  await until(async () => (await readLog()).includes('still waiting'), 'heartbeat line in the log');
+  const wrapper = (await fs.readFile(pidPath(), 'utf-8')).trim();
+  const inner = execFileSync('pgrep', ['-P', wrapper], { encoding: 'utf-8' }).trim().split('\n')[0];
+  process.kill(Number(inner), 'SIGKILL');
+  await until(pidGone, 'the wrapper removed the pid file');
+  assert.match(await lastLine(), /^kitty-send: queued waiter exit rc=137 \(SIGKILL\) at /);
+});
+
+test('--cancel writes its own verdict line into the log', async () => {
+  await runScript(['--to', WID, '--text', 'hi', '--queue']);
+  await until(async () => !(await pidGone()), 'the waiter wrote its pid file');
+  const { code } = await runScript(['--cancel', '--to', WID]);
+  assert.equal(code, 0);
+  await until(pidGone, 'cancel removed the pid file');
+  assert.match(await lastLine(), /^kitty-send: queued waiter cancelled by --cancel at /);
 });
 
 // ---- unbounded default: waits indefinitely, refuses a second queue -----------
