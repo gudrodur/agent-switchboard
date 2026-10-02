@@ -70,7 +70,28 @@ KEY_COMMAND="${OMP_TAB_KEY_COMMAND:-${KEY_COMMAND:-}}"
 die()  { printf '%s\n' "omp-tab: $1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "omp-tab: $*" >&2; }
 
-kitty_up() { kitty @ ls >/dev/null 2>&1; }
+# kitty_up keeps kitty's own error: on 2026-10-02 a /tmp sweep deleted the live
+# socket and the bare "unavailable" sent a session tracing the launcher instead
+# of reading "no such file or directory" (agent-config#1026 row 1). On failure
+# KITTY_DIAG holds that error, $KITTY_LISTEN_ON, and whether the socket path
+# still exists; every refusal below appends it.
+KITTY_DIAG=""
+kitty_up() {
+  local err sock
+  err=$(kitty @ ls 2>&1 >/dev/null) && return 0
+  KITTY_DIAG=$'\n        kitty said: '"${err:-<nothing>}"
+  KITTY_DIAG+=$'\n        KITTY_LISTEN_ON='"${KITTY_LISTEN_ON:-<unset>}"
+  case "${KITTY_LISTEN_ON:-}" in
+    unix:@*) ;;  # abstract socket: no path to check
+    unix:*)
+      sock=${KITTY_LISTEN_ON#unix:}
+      if [ ! -e "$sock" ]; then
+        KITTY_DIAG+=$'\n        The socket path does not exist: something deleted it while kitty kept'
+        KITTY_DIAG+=$'\n        listening on the unlinked inode; only restart kitty restores it (it closes every window).'
+      fi ;;
+  esac
+  return 1
+}
 
 # ── brief claims (agent-config task-claim.mjs) ──────────────────────────────
 # Two seats on ONE brief is the race task claims exist for: on 2026-09-25
@@ -124,7 +145,7 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 fi
 
 if [ "${1:-}" = "--list" ]; then
-  kitty_up || die "kitty remote control unavailable" 2
+  kitty_up || die "kitty remote control unavailable.$KITTY_DIAG" 2
   [ -s "$STATE" ] || { echo "(no windows launched by this script)"; exit 0; }
   # One `ls` for the whole listing, not one per row: this file is append-only,
   # so the per-row form cost a kitty subprocess per historical entry.
@@ -192,7 +213,7 @@ fi
 if [ "${1:-}" = "--close" ]; then
   [ -n "${2:-}" ] || die "--close needs a window id"
   case "$2" in *[!0-9]*|"") die "--close takes a numeric window id, got: $2" ;; esac
-  kitty_up || die "kitty remote control unavailable" 2
+  kitty_up || die "kitty remote control unavailable.$KITTY_DIAG" 2
 
   # The whole point: only ever close what this script started.
   row=$(grep "^$2 " "$STATE" 2>/dev/null | head -1)
@@ -667,7 +688,7 @@ while IFS= read -r _seat_only; do
         Pass --seat overseer|supervisor for a seat, or launch a worker on a worker model."
 done < <(tbl seat_only)
 
-kitty_up || die "kitty remote control unavailable.
+kitty_up || die "kitty remote control unavailable.$KITTY_DIAG
         Fall back to a headless run and SAY SO to the user, rather than letting
         a silent headless run look like the default:
           omp -p --no-session --profile <name> \\

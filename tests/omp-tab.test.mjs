@@ -96,6 +96,8 @@ before(async () => {
     `state=${JSON.stringify(stateDir)}`,
     'case "$1/$2" in',
     '  @/ls)',
+    // $state/ls-fail makes `kitty @ ls` fail the way a deleted socket does.
+    '    if [ -f "$state/ls-fail" ]; then echo "Error: dial unix ${KITTY_LISTEN_ON#unix:}: connect: no such file or directory" >&2; exit 1; fi',
     '    pid=$(cat "$state/pid")',
     "    printf '%s\\n' " + JSON.stringify(lsJson.replace('PIDHERE', '"$pid"')),
     '    ;;',
@@ -205,7 +207,7 @@ after(async () => {
   await fs.rm(homeDir, { recursive: true, force: true }).catch(() => {});
 });
 const reset = async (screen) => {
-  for (const f of ['sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'omp-env', 'balance.json', 'closed', 'close-args'])
+  for (const f of ['ls-fail', 'sent', 'echo', 'launched', 'launch-args', 'omp-fail', 'omp-hang', 'omp-calls', 'omp-env', 'balance.json', 'closed', 'close-args'])
     await fs.rm(path.join(stateDir, f), { force: true });
   // The launch state file is per-uid and append-only, and the kitty stub serves
   // ONE window id that never disappears — so without this a row written by an
@@ -1443,4 +1445,44 @@ test("a tab whose process is the launcher's ancestor is not a slot holder, even 
   const r = await runScript(baseArgs('brief-gt.md'), { KITTY_WINDOW_ID: '' });
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.equal(await launched(), true);
+});
+
+// ---- a dead kitty socket is diagnosed, not just reported ----
+// 2026-10-02: a /tmp sweep deleted kitty's live socket and every caller got
+// only "kitty remote control unavailable", with kitty's own error discarded.
+// The refusal now carries that error, $KITTY_LISTEN_ON, and whether the
+// socket path still exists (agent-config#1026 row 1).
+for (const [name, args] of [
+  ['--list', () => ['--list']],
+  ['--close', () => ['--close', String(WID)]],
+  ['a launch', () => baseArgs('brief-gt.md')],
+]) {
+  test(`${name} with a deleted kitty socket names the error, the socket and the restart`, async () => {
+    await reset(NEW_TUI);
+    await fs.writeFile(path.join(stateDir, 'ls-fail'), '');
+    const sock = path.join(stateDir, 'kitty-socket-7028');
+    const r = await runScript(args(), { KITTY_LISTEN_ON: `unix:${sock}` });
+    assert.equal(r.code, 2, `${r.out}${r.err}`);
+    assert.match(r.err, /kitty remote control unavailable/, 'agent-send greps this phrase');
+    assert.match(r.err, /dial unix .*kitty-socket-7028: connect: no such file or directory/);
+    assert.match(r.err, new RegExp(`KITTY_LISTEN_ON=unix:${sock.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.match(r.err, /socket path does not exist/);
+    assert.match(r.err, /restart kitty/);
+    assert.equal(await launched(), false);
+  });
+}
+
+test('a kitty failure with the socket present does not claim it was deleted', async () => {
+  await reset(NEW_TUI);
+  await fs.writeFile(path.join(stateDir, 'ls-fail'), '');
+  const sock = path.join(stateDir, 'kitty-socket-present');
+  await fs.writeFile(sock, '');
+  try {
+    const r = await runScript(['--list'], { KITTY_LISTEN_ON: `unix:${sock}` });
+    assert.equal(r.code, 2, `${r.out}${r.err}`);
+    assert.match(r.err, /dial unix/);
+    assert.doesNotMatch(r.err, /does not exist/);
+  } finally {
+    await fs.rm(sock, { force: true });
+  }
 });
