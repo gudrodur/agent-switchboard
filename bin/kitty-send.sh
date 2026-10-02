@@ -527,6 +527,11 @@ if [ "$CANCEL" = 1 ]; then
   qpid=$(cat "$pf" 2>/dev/null || true)
   if [ -n "$qpid" ] && kill -0 "$qpid" 2>/dev/null; then
     kill -- "-$qpid" 2>/dev/null || kill "$qpid" 2>/dev/null || true
+    # The killed wrapper writes no verdict of its own, so this is the log's
+    # last line. Wait for it to be gone first, or a slow death could append
+    # after us and the last line would lie.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$qpid" 2>/dev/null || break; sleep 0.2; done
+    printf 'kitty-send: queued waiter cancelled by --cancel at %s\n' "$(date +%T)" >>"$lf"
     rm -f "$pf"
     note "cancelled the queued send to window $WID (pid $qpid). Its log says whether anything went out before that: $lf"
     exit 0
@@ -542,7 +547,12 @@ fi
 # same script (run with KITTY_SEND_WAIT_UNBOUNDED=1 when no bound was given,
 # otherwise with --wait-idle), so it sends with the same dialog check and the
 # same proof; its stdout/stderr go to the log, its pid to the pid file, and it
-# removes the pid file when it finishes. setsid puts it in its own process
+# removes the pid file when it finishes. Before that it appends one verdict
+# line, `queued waiter exit rc=N [(SIGNAME)] at HH:MM:SS`, because the pid
+# file goes however the waiter ends: without the line, a waiter that died
+# silently after a heartbeat read exactly like one that delivered
+# (agent-config#1043 row 1). A log whose last line is not a verdict means the
+# wrapper itself was killed. setsid puts it in its own process
 # group, which is what lets --cancel kill the waiter and its sleep together
 # by pid and touch nothing else.
 if [ "$QUEUE" = 1 ]; then
@@ -572,7 +582,10 @@ if [ "$QUEUE" = 1 ]; then
   # Forward --idle-when or the waiter inherits the busy check this flag exists
   # to relax, and a queued steer waits out a tab that was never working.
   [ -z "$IDLE_WHEN" ] || args+=(--idle-when "$IDLE_WHEN")
-  KITTY_SEND_WAIT_UNBOUNDED="$unbounded" setsid bash -c 'exec >"$1" 2>&1; pf=$2; shift 2; "$@"; rc=$?; rm -f "$pf"; exit $rc' \
+  KITTY_SEND_WAIT_UNBOUNDED="$unbounded" setsid bash -c 'exec >"$1" 2>&1; pf=$2; shift 2; "$@"; rc=$?
+      sig=; [ "$rc" -le 128 ] || sig=" (SIG$(kill -l $((rc - 128)) 2>/dev/null || echo ?))"
+      printf "kitty-send: queued waiter exit rc=%s%s at %s\n" "$rc" "$sig" "$(date +%T)"
+      rm -f "$pf"; exit $rc' \
     _ "$lf" "$pf" bash "$0" "${args[@]}" </dev/null &
   qpid=$!
   printf '%s\n' "$qpid" > "$pf"
