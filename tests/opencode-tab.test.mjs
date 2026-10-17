@@ -159,11 +159,23 @@ test('beacon + a new session on the asked model: exit 0, SESSION printed, state 
   assert.match(r.out, new RegExp(`^WINDOW_ID=${WID}$`, 'm'));
   assert.match(r.out, /^SESSION=ses_new$/m);
   const args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
-  assert.match(args, /^--model\nopencode\/muse-spark-1\.3-contributor-free$/m);
+  assert.match(args, /^mini\n--standalone\n--model\nopencode\/muse-spark-1\.3-contributor-free$/m);
   assert.match(args, new RegExp(`^Read ${brief} and carry it out`, 'm'));
   const row = await fs.readFile(path.join(stateDir, 'omp-tab-launched.' + os.userInfo().uid), 'utf8');
   assert.equal(row, `${WID} ${process.pid} @test-launcher opencode: test\n`);
   assert.equal(await exists('closed'), false);
+});
+
+test('reads session_v2 when present (opencode v2.0.29+, #47) and falls back to session when absent', async () => {
+  await beacon(WID);
+  const d = new DatabaseSync(db);
+  d.exec('CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT, model TEXT, parent_id TEXT, time_created INTEGER)');
+  const [providerID, mid] = MODEL.split('/');
+  d.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?)').run('ses_v2_new', cwd, JSON.stringify({ id: mid, providerID }), null, Date.now() + 60_000);
+  d.close();
+  const r = await tab(full());
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^SESSION=ses_v2_new$/m);
 });
 
 test('a session on another model closes the window and exits 3', async () => {

@@ -196,10 +196,10 @@ MSG="Read $BRIEF and carry it out in full. Run the commands rather than reasonin
 
 START_MS=$(( $(date +%s) * 1000 ))
 WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" \
-        "$LAUNCH" --model "$MODEL" --prompt "$MSG" 2>/dev/null)
+        "$LAUNCH" mini --standalone --model "$MODEL" --prompt "$MSG" 2>/dev/null)
 case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id, got: '$WID'" ;; esac
 WPID=$(win_pid "$WID")
-[ -n "$WPID" ] || { printf 'WINDOW_ID=%s\n' "$WID"; die "window $WID exited immediately after launch — run $LAUNCH --model $MODEL by hand" 3; }
+[ -n "$WPID" ] || { printf 'WINDOW_ID=%s\n' "$WID"; die "window $WID exited immediately after launch — run $LAUNCH mini --standalone --model $MODEL by hand" 3; }
 printf '%s %s @%s %s\n' "$WID" "$WPID" "$LAUNCHER" "$TITLE" >> "$STATE"
 note "launched window $WID (pid $WPID) — $TITLE"
 claim_cli --claim "$CWD" "$BRIEF_REF" --owner "kitty:$WID" --note "$TITLE" >/dev/null 2>&1 || true
@@ -212,15 +212,26 @@ close_it() {
 
 # The newest top-level session opencode created in $CWD since the launch, as
 # `id<TAB>provider/model`. Read-only; the store is WAL, so this never blocks it.
+# opencode v2.0.29+ writes to `session_v2` (#47); fall back to `session` when
+# `session_v2` is absent or holds no newer matching row.
 new_session() {
   [ -r "$DB" ] || return 0
   node - "$DB" "$CWD" "$START_MS" <<'JS' 2>/dev/null
 process.emitWarning = () => {};
 const { DatabaseSync } = require('node:sqlite');
 const [db, cwd, since] = process.argv.slice(2);
-const r = new DatabaseSync(db, { readOnly: true })
-  .prepare('SELECT id, model FROM session WHERE directory = ? AND parent_id IS NULL AND time_created >= ? ORDER BY time_created DESC LIMIT 1')
-  .get(cwd, Number(since) - 2000);
+const d = new DatabaseSync(db, { readOnly: true });
+const tables = d
+  .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_v2','session') ORDER BY CASE name WHEN 'session_v2' THEN 0 ELSE 1 END")
+  .all()
+  .map((row) => row.name);
+let r = null;
+for (const t of tables) {
+  r = d
+    .prepare(`SELECT id, model FROM ${t} WHERE directory = ? AND parent_id IS NULL AND time_created >= ? ORDER BY time_created DESC LIMIT 1`)
+    .get(cwd, Number(since) - 2000);
+  if (r) break;
+}
 if (r) { let m = {}; try { m = JSON.parse(r.model || '{}'); } catch {} console.log(`${r.id}\t${m.providerID ?? '?'}/${m.id ?? '?'}`); }
 JS
 }
@@ -231,7 +242,7 @@ for _ in $(seq 1 45); do
   if [ -z "$(win_pid "$WID")" ]; then
     printf 'WINDOW_ID=%s\n' "$WID"
     sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
-    die "window $WID exited before it was proven started — run $LAUNCH --model $MODEL by hand to see why" 3
+    die "window $WID exited before it was proven started — run $LAUNCH mini --standalone --model $MODEL by hand to see why" 3
   fi
   if [ "$beacon" = 0 ] && presence_json 2>/dev/null | jq -e --argjson w "$WID" '.beacons[] | select(.windowId == $w)' >/dev/null 2>&1; then
     beacon=1
