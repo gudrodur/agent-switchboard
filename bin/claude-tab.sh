@@ -7,11 +7,18 @@
 #   claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md \
 #                 --model opus|sonnet|haiku|fable|<full model id> [--rc [NAME]]
 #                 [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
+#   claude-tab.sh --seat --title "claude: <name>" --model ... [--rc [NAME]]
+#                 [--brief /abs/brief.md] [--cwd /abs/repo]
 #   claude-tab.sh --list | --close <window-id>       (omp-tab.sh's, on the same state file)
 #   claude-tab.sh --help | -h
 #
 #   --rc [NAME]  start the session with Remote Control on, named NAME (default:
 #                the --title), and require the bridge-session row as proof
+#   --seat       an overseer seat, not a package tab: no state row, so it never
+#                holds the one-slot gate, no slot check and no brief claim, and
+#                --brief is optional (without one a fixed greeting starts the
+#                session, so the start can still be proven). For a tab that
+#                lives all day, such as the login seat (claude-login-seats.sh).
 #
 # --cwd must be a folder Claude Code trusts, itself or through a folder above
 # it; an untrusted one is refused (exit 1). A throwaway folder under /tmp is
@@ -82,7 +89,7 @@ case "${1:-}" in
   --list|--close) exec "$HERE/omp-tab.sh" "$@" ;;
 esac
 
-TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; SLOT_OVERRIDE=""; RC=0; RC_NAME=""
+TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; SLOT_OVERRIDE=""; RC=0; RC_NAME=""; SEAT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --title) TITLE="${2:-}"; shift 2 ;;
@@ -91,6 +98,7 @@ while [ $# -gt 0 ]; do
     --model|-m) MODEL="${2:-}"; shift 2 ;;
     --cwd) CWD="${2:-}"; shift 2 ;;
     --slot-override) SLOT_OVERRIDE="${2:-}"; shift 2 ;;
+    --seat) SEAT=1; shift ;;
     --rc)
       RC=1; shift
       case "${1:-}" in ""|--*) ;; *) RC_NAME="$1"; shift ;; esac ;;
@@ -104,18 +112,20 @@ case "$MODEL" in
   opus|sonnet|haiku|fable|claude-*) ;;
   *) die "--model takes opus, sonnet, haiku, fable or a full claude-* id, got: $MODEL" ;;
 esac
-[ -n "$BRIEF" ] || die "--brief is required"
-case "$BRIEF" in /*) ;; *) die "--brief must be absolute (it resolves against the tab's cwd): $BRIEF" ;; esac
-[ -r "$BRIEF" ] || die "--brief not readable: $BRIEF"
-# The brief lint omp-tab.sh runs, less its 768-byte line cap: the brief goes in
-# as the initial prompt here, and Claude Code does not cut a line.
-. "$HERE/../lib/brief-lint.sh"
-PLACEHOLDERS=$(brief_placeholder_lines "$BRIEF")
-[ -z "$PLACEHOLDERS" ] || die "brief line(s) $PLACEHOLDERS carry a bare #N placeholder outside backticks: a tab copies it
+[ -n "$BRIEF" ] || [ "$SEAT" = 1 ] || die "--brief is required"
+if [ -n "$BRIEF" ]; then
+  case "$BRIEF" in /*) ;; *) die "--brief must be absolute (it resolves against the tab's cwd): $BRIEF" ;; esac
+  [ -r "$BRIEF" ] || die "--brief not readable: $BRIEF"
+  # The brief lint omp-tab.sh runs, less its 768-byte line cap: the brief goes in
+  # as the initial prompt here, and Claude Code does not cut a line.
+  . "$HERE/../lib/brief-lint.sh"
+  PLACEHOLDERS=$(brief_placeholder_lines "$BRIEF")
+  [ -z "$PLACEHOLDERS" ] || die "brief line(s) $PLACEHOLDERS carry a bare #N placeholder outside backticks: a tab copies it
         into a commit subject or PR body. Name the real issue number, or quote the example in backticks. Nothing launched."
-TRAILERS=$(brief_trailer_lines "$BRIEF")
-[ -z "$TRAILERS" ] || die "brief line(s) $TRAILERS ask for a Co-Authored-By trailer: the commit hooks refuse AI authorship
+  TRAILERS=$(brief_trailer_lines "$BRIEF")
+  [ -z "$TRAILERS" ] || die "brief line(s) $TRAILERS ask for a Co-Authored-By trailer: the commit hooks refuse AI authorship
         trailers, so the tab's commit fails. Say \"Never add a Co-Authored-By line\" instead. Nothing launched."
+fi
 case "$CWD" in /*) ;; *) die "--cwd must be absolute: $CWD" ;; esac
 [ -d "$CWD" ] || die "--cwd is not a directory: $CWD"
 if [ -n "$OUT" ]; then case "$OUT" in /*) ;; *) die "--out must be absolute: $OUT" ;; esac; fi
@@ -179,8 +189,10 @@ slot_holders() {
   done < "$STATE"
   set +f
 }
-BRIEF_REF="brief:$(basename "$BRIEF")"
-if [ -z "$SLOT_OVERRIDE" ]; then
+BRIEF_REF="brief:$(basename "${BRIEF:-none}")"
+if [ "$SEAT" = 1 ]; then
+  : # a seat is not a package tab: it neither checks nor holds the slot
+elif [ -z "$SLOT_OVERRIDE" ]; then
   holders=$(slot_holders)
   [ -z "$holders" ] || die "another seat holds the package-tab slot (#699) — nothing launched.
         live tab(s): $holders
@@ -200,8 +212,12 @@ fi
 TDIR="$PROJECTS/$(readlink -f "$CWD" | sed 's/[^A-Za-z0-9-]/-/g')"
 BEFORE=$(ls -1 "$TDIR" 2>/dev/null | grep '\.jsonl$' | tr '\n' ' ')
 
-MSG="Read $BRIEF and carry it out in full. Run the commands rather than reasoning about them. Use absolute paths and 'git -C <dir> ...'."
-[ -n "$OUT" ] && MSG="$MSG Write your findings to $OUT"
+if [ -n "$BRIEF" ]; then
+  MSG="Read $BRIEF and carry it out in full. Run the commands rather than reasoning about them. Use absolute paths and 'git -C <dir> ...'."
+  [ -n "$OUT" ] && MSG="$MSG Write your findings to $OUT"
+else
+  MSG="This tab was opened as an overseer seat by claude-tab.sh --seat${RC_NAME:+, with Remote Control \"$RC_NAME\"}. Reply with one line saying you are ready, then wait for instructions."
+fi
 
 ARGS=("$CLAUDE_BIN" --model "$MODEL")
 [ "$RC" = 1 ] && ARGS+=(--remote-control "$RC_NAME")
@@ -210,9 +226,11 @@ WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" "${ARGS[@]}" 2
 case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id, got: '$WID'" ;; esac
 WPID=$(win_pid "$WID")
 [ -n "$WPID" ] || { printf 'WINDOW_ID=%s\n' "$WID"; die "window $WID exited immediately after launch — run $CLAUDE_BIN --model $MODEL by hand" 3; }
-printf '%s %s @%s %s\n' "$WID" "$WPID" "$LAUNCHER" "$TITLE" >> "$STATE"
+if [ "$SEAT" = 0 ]; then
+  printf '%s %s @%s %s\n' "$WID" "$WPID" "$LAUNCHER" "$TITLE" >> "$STATE"
+  claim_cli --claim "$CWD" "$BRIEF_REF" --owner "kitty:$WID" --note "$TITLE" >/dev/null 2>&1 || true
+fi
 note "launched window $WID (pid $WPID) — $TITLE"
-claim_cli --claim "$CWD" "$BRIEF_REF" --owner "kitty:$WID" --note "$TITLE" >/dev/null 2>&1 || true
 
 close_it() {
   kitty @ close-window --match "id:$WID" 2>/dev/null || true
@@ -259,7 +277,9 @@ if [ -n "$GOT" ] && { [ "$RC" = 0 ] || [ "$BRIDGE" = 1 ]; }; then
   note "confirmed: session $(basename "$SESSION" .jsonl) on $GOT${RC_NAME:+, Remote Control \"$RC_NAME\"}"
   printf 'SESSION=%s\n' "$SESSION"
   [ -n "$OUT" ] && printf 'OUT=%s\n' "$OUT"
-  printf 'CLOSE_WITH=%s --close %s\n' "$0" "$WID"
+  # --close refuses a window with no state row, so a seat names kitty's own close.
+  if [ "$SEAT" = 1 ]; then printf 'CLOSE_WITH=kitty @ close-window --match id:%s\n' "$WID"
+  else printf 'CLOSE_WITH=%s --close %s\n' "$0" "$WID"; fi
   exit 0
 fi
 note "not proven within 90 s (session=${SESSION:-none} model=${GOT:-none}$([ "$RC" = 1 ] && printf ' bridge=%s' "$BRIDGE")) — go look at window $WID before assuming it is working"

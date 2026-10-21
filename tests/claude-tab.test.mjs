@@ -11,7 +11,7 @@
 import './helpers/isolate-setup.mjs';
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -22,8 +22,11 @@ import { isolatedEnv } from './helpers/isolate-env.mjs';
 const run = promisify(execFile);
 const SCRIPT = fileURLToPath(new URL('../bin/claude-tab.sh', import.meta.url));
 const WID = 992101;
+// A second live window another seat launched: its pid is a real process that
+// is not this script's ancestor, so the slot gate counts it.
+const OTHER_WID = 992102;
 
-let binDir, stateDir, cwd, brief, projects, tdir, config;
+let binDir, stateDir, cwd, brief, projects, tdir, config, other;
 
 before(async () => {
   binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cltab-bin-'));
@@ -34,7 +37,8 @@ before(async () => {
   projects = path.join(stateDir, 'projects');
   tdir = path.join(projects, cwd.replace(/[^A-Za-z0-9-]/g, '-'));
   config = path.join(stateDir, 'claude.json');
-  const lsJson = `[{"tabs":[{"windows":[{"id":${WID},"pid":${process.pid}}]}]}]`;
+  other = spawn('/usr/bin/sleep', ['600'], { stdio: 'ignore' });
+  const lsJson = `[{"tabs":[{"windows":[{"id":${WID},"pid":${process.pid}},{"id":${OTHER_WID},"pid":${other.pid}}]}]}]`;
   await fs.writeFile(
     path.join(binDir, 'kitty'),
     [
@@ -59,6 +63,7 @@ before(async () => {
 });
 
 after(async () => {
+  other.kill();
   for (const d of [binDir, stateDir, cwd]) await fs.rm(d, { recursive: true, force: true });
 });
 
@@ -237,4 +242,53 @@ test('a window that dies at launch exits 3 and writes no state row', async () =>
   assert.equal(r.code, 3);
   assert.match(r.err, /exited immediately after launch/);
   assert.equal(await exists('omp-tab-launched.' + os.userInfo().uid), false);
+});
+
+test('--brief is required for a package tab', async () => {
+  const r = await tab(['--title', 't', '--model', 'opus', '--cwd', cwd]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /--brief is required/);
+  assert.equal(await exists('launch-args'), false);
+});
+
+const holdSlot = () =>
+  fs.writeFile(path.join(stateDir, 'omp-tab-launched.' + os.userInfo().uid), `${OTHER_WID} ${other.pid} @other-seat omp: other\n`);
+
+test('a package tab is refused while another seat holds the slot', async () => {
+  await holdSlot();
+  await session('claude-opus-5-5');
+  const r = await tab(full());
+  assert.equal(r.code, 1);
+  assert.match(r.err, /holds the package-tab slot/);
+  assert.equal(await exists('launch-args'), false);
+});
+
+const seat = (...extra) => ['--seat', '--title', 'claude: fedora', '--model', 'opus', '--cwd', cwd, ...extra];
+
+test('--seat needs no brief: it sends the fixed greeting and proves the start', async () => {
+  await session('claude-opus-5-5', { bridge: true });
+  const r = await tab(seat('--rc', 'fedora'));
+  assert.equal(r.code, 0, r.err);
+  const args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
+  assert.match(args, /^--remote-control\nfedora$/m);
+  assert.match(args, /opened as an overseer seat/);
+  assert.doesNotMatch(args, /^Read .* and carry it out/m);
+  assert.match(r.err, /Remote Control "fedora"/);
+  assert.match(r.out, new RegExp(`^CLOSE_WITH=kitty @ close-window --match id:${WID}$`, 'm'));
+});
+
+test('--seat writes no state row, so the seat never holds the package-tab slot', async () => {
+  await session('claude-opus-5-5');
+  const r = await tab(seat('--brief', brief));
+  assert.equal(r.code, 0, r.err);
+  assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), new RegExp(`^Read ${brief} and carry it out`, 'm'));
+  assert.equal(await exists('omp-tab-launched.' + os.userInfo().uid), false);
+});
+
+test('--seat launches while another seat holds the package-tab slot', async () => {
+  await holdSlot();
+  await session('claude-opus-5-5');
+  const r = await tab(seat());
+  assert.equal(r.code, 0, r.err);
+  assert.equal(await stateRows(), `${OTHER_WID} ${other.pid} @other-seat omp: other\n`);
 });
