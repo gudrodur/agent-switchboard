@@ -9,6 +9,7 @@
 // Raw table names (mailbox_rows, presence_beacons) are accepted too.
 // The database path comes from AGENT_SWITCHBOARD_DB (default
 // $AGENT_SWITCHBOARD_DIR/state.db). Never writes to the store.
+// Exit: 0 dumped, 2 usage error or no store at the path.
 
 import fs from 'node:fs';
 import { defaultStorePath, openStore } from '../lib/store.mjs';
@@ -28,10 +29,15 @@ if (!TABLE) {
   process.exit(2);
 }
 
+// A missing file is not an empty store: it means the path is wrong (a shell
+// without the host's AGENT_SWITCHBOARD_DB pin reads the default path), and
+// printing [] for it reads as "no rows" while the live store holds them.
 const dbPath = defaultStorePath();
 if (!fs.existsSync(dbPath)) {
-  process.stdout.write('[]\n');
-  process.exit(0);
+  process.stderr.write(
+    `switchboard-export: no store at ${dbPath} (set AGENT_SWITCHBOARD_DB to the store the hooks write)\n`,
+  );
+  process.exit(2);
 }
 
 const store = openStore(dbPath);
