@@ -20,6 +20,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -29,6 +30,12 @@ const WID = '991001';
 const WCWD = path.join(os.tmpdir(), 'example-tab-state');
 
 let binDir, sessDir;
+
+// Every run points OPENCODE_TAB_DB at a path that does not exist, so no test
+// can read the live opencode store by accident: a fixture that wants the
+// opencode path passes its own. (An empty value would NOT disable it —
+// ${OPENCODE_TAB_DB:-default} treats empty as unset.)
+const NO_OPENCODE_DB = () => path.join(sessDir, 'no-such-opencode.db');
 
 const nowIso = () => new Date().toISOString();
 const nowMs = () => Date.now();
@@ -115,7 +122,7 @@ const runScript = async (args, extraEnv = {}) => {
     const r = await run(SCRIPT, args, {
       env: isolatedEnv({
         PATH: `${binDir}:${process.env.PATH}`,
-        OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', ...extraEnv,
+        OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB(), ...extraEnv,
       }),
       timeout: 30_000,
     });
@@ -373,7 +380,7 @@ test('--watch emits exactly the transitions', async () => {
   await writeSession(name, [titleRow(), sessionRow(WCWD, nowIso()), assistantRow('stop', t - 9000)]);
   await linkKitty(name);
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB() }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -393,7 +400,7 @@ test('--watch emits exactly the transitions', async () => {
 test('--watch survives tab startup: unknown until the session file appears ', async () => {
   await clearLinks();
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB() }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -417,7 +424,7 @@ test('--watch on a gone window ends with state=gone, never waits forever', async
   await clearLinks();
   await fs.writeFile(path.join(sessDir, 'no-window'), '');
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB() }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -432,7 +439,7 @@ test('--watch reports gone when the window closes mid-watch', async () => {
   await writeSession('closing.jsonl', [titleRow(), sessionRow(WCWD, nowIso()), assistantRow('stop', t)]);
   await linkKitty('closing.jsonl');
   const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
-    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '' }),
+    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB() }),
   });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -538,4 +545,178 @@ test('with no seams set, the link files are read from omp\'s own directory under
   await fs.rm(home, { recursive: true, force: true });
   assert.equal(r.code, 0, `${r.out}${r.err}`);
   assert.match(r.out, /state=idle/);
+});
+
+// ---- OpenCode V2 tabs: state from opencode.db, never a jsonl -------------------
+//
+// An OpenCode tab (v2.0.29+, the machine runs v2.0.32) writes no omp jsonl and
+// no Claude transcript. Its session and turns are rows in opencode.db:
+// `session_v2` (one per session, naming its `directory` and `time_created`)
+// and `session_message` (one per turn element: `user`, `assistant`, `idle`,
+// `shell`, ... with `seq` the counter a send proof watches grow). Shapes below
+// are trimmed copies of the live store, 2026-10-22.
+const OC_SID = 'ses_test0000000000000open';
+
+// Writes a two-table opencode store; returns its path and directory.
+const writeOpenCodeDb = async (rows, opts = {}) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tabstate-oc-'));
+  const file = path.join(dir, 'opencode.db');
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE session_v2 (
+    id TEXT PRIMARY KEY, directory TEXT, model TEXT, parent_id TEXT,
+    time_created INTEGER, time_updated INTEGER, time_idle INTEGER, idle_outcome TEXT)`);
+  db.exec(`CREATE TABLE session_message (
+    id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+    time_created INTEGER, time_updated INTEGER, data TEXT)`);
+  const created = opts.timeCreated ?? Date.now();
+  db.prepare('INSERT INTO session_v2 (id, directory, model, parent_id, time_created, time_updated, time_idle, idle_outcome) VALUES (?,?,?,?,?,?,?,?)')
+    .run(OC_SID, opts.directory ?? WCWD, '{"id":"m","providerID":"opencode"}', opts.parentId ?? null,
+      created, created, opts.timeIdle ?? null, opts.idleOutcome ?? null);
+  const ins = db.prepare('INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?,?,?,?,?,?,?)');
+  rows.forEach((r, i) => ins.run(`m-${i}`, OC_SID, r.type, r.seq, r.ts, r.ts, JSON.stringify(r.data)));
+  db.close();
+  return { dir, file };
+};
+const ocUser = (text, seq, ts) => ({ type: 'user', seq, ts, data: { time: { created: ts }, text } });
+const ocIdle = (seq, ts) => ({ type: 'idle', seq, ts, data: { time: { created: ts }, outcome: 'succeeded' } });
+const ocAssistant = (seq, ts, tool) => ({
+  type: 'assistant', seq, ts,
+  data: { time: { created: ts }, content: [{ type: 'reasoning', text: 'thinking' }, { type: 'tool', name: tool, state: { status: 'running' } }] },
+});
+
+test('a trailing opencode assistant row with a tool call reports busy tool=shell source=opencode-db', async () => {
+  await clearLinks();
+  const t = nowMs();
+  const { dir, file } = await writeOpenCodeDb([ocUser('carry it out', 4, t - 9000), ocAssistant(11, t - 1000, 'shell')]);
+  try {
+    // No kitty-/pts- link at all: this window is not an omp tab.
+    const r = await runScript([WID], { OPENCODE_TAB_DB: file });
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.out, /state=busy/);
+    assert.match(r.out, /tool=shell/);
+    assert.match(r.out, new RegExp(`session=opencode:${OC_SID}`));
+    assert.match(r.out, /lines=11/);
+    const j = JSON.parse((await runScript([WID, '--json'], { OPENCODE_TAB_DB: file })).out);
+    assert.equal(j.state, 'busy');
+    assert.equal(j.tool, 'shell');
+    assert.equal(j.source, 'opencode-db');
+    assert.equal(j.session, `opencode:${OC_SID}`);
+    assert.equal(j.lines, 11);
+    assert.equal(j.pid, Number(process.pid));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a trailing opencode idle row reports idle tool=- jobs=0 source=opencode-db', async () => {
+  await clearLinks();
+  const t = nowMs();
+  const { dir, file } = await writeOpenCodeDb([
+    ocUser('carry it out', 4, t - 9000), ocAssistant(11, t - 5000, 'shell'), ocIdle(12, t - 1000),
+  ], { timeIdle: t - 1000, idleOutcome: 'succeeded' });
+  try {
+    const r = await runScript([WID], { OPENCODE_TAB_DB: file });
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.out, /state=idle/);
+    assert.match(r.out, /tool=-/);
+    assert.match(r.out, /jobs=0/);
+    assert.match(r.out, /lines=12/);
+    assert.match(r.out, new RegExp(`session=opencode:${OC_SID}`));
+    const j = JSON.parse((await runScript([WID, '--json'], { OPENCODE_TAB_DB: file })).out);
+    assert.equal(j.state, 'idle');
+    assert.equal(j.source, 'opencode-db');
+    assert.deepEqual(j.jobs, []);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a live opencode session wins over a stale pts-N link from an old omp session (cwd-mismatch)', async () => {
+  // The measured failure: /dev/pts/N numbers are reused, so a pts-N left behind
+  // by an earlier omp tab in ANOTHER directory is still resolvable for this
+  // window, and validate_link says cwd-mismatch. The window is really an
+  // OpenCode tab, and its live row in opencode.db must decide the answer.
+  await clearLinks();
+  const t = nowMs();
+  await writeSession('old-omp-elsewhere.jsonl', [
+    titleRow(), sessionRow(path.join(os.tmpdir(), 'example-other-project'), nowIso()), assistantRow('stop', t - 1000),
+  ]);
+  await linkPts('7', 'old-omp-elsewhere.jsonl');
+  const { dir, file } = await writeOpenCodeDb([ocUser('carry it out', 4, t - 9000), ocIdle(12, t - 1000)]);
+  try {
+    const env = { OMP_TAB_STATE_PTS_N: '7', OPENCODE_TAB_DB: file };
+    const r = await runScript([WID], env);
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.out, /state=idle/);
+    assert.doesNotMatch(r.out, /state=unknown/);
+    assert.doesNotMatch(r.out, /reason=cwd-mismatch/);
+    // And the same window mid-turn: the store's newest decisive row decides.
+    const db = new DatabaseSync(file);
+    db.prepare('INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?,?,?,?,?,?,?)')
+      .run('m-99', OC_SID, 'assistant', 20, t, t, JSON.stringify(ocAssistant(20, t, 'bash').data));
+    db.close();
+    const r2 = await runScript([WID], env);
+    assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
+    assert.match(r2.out, /state=busy/);
+    assert.match(r2.out, /tool=bash/);
+    assert.match(r2.out, /lines=20/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('--watch reports an opencode tab\'s transitions from opencode.db', async () => {
+  // The watch loop has its own call site (resolve_candidates runs each tick, so
+  // a tab that starts as a non-tab must be re-identified), and it is the mode a
+  // supervisor actually leaves running.
+  await clearLinks();
+  const t = nowMs();
+  const { dir, file } = await writeOpenCodeDb([ocUser('carry it out', 4, t - 9000), ocIdle(12, t - 1000)]);
+  const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
+    env: isolatedEnv({
+      PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir,
+      OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: file,
+    }),
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  try {
+    await new Promise((r) => setTimeout(r, 2500));
+    const db = new DatabaseSync(file);
+    db.prepare('INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?,?,?,?,?,?,?)')
+      .run('m-99', OC_SID, 'assistant', 20, Date.now(), Date.now(), JSON.stringify(ocAssistant(20, Date.now(), 'shell').data));
+    db.close();
+    await new Promise((r) => setTimeout(r, 2500));
+  } finally {
+    child.kill();
+    await new Promise((r) => child.on('close', r));
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+  const lines = out.trim().split('\n');
+  assert.deepEqual(lines.map((l) => /state=([a-z]+)/.exec(l)?.[1]), ['idle', 'busy']);
+  assert.match(lines[1], /tool=shell/);
+  assert.match(lines[1], /lines=20/);
+});
+
+test('an opencode session for another directory is not this window\'s state', async () => {
+  // The store holds every session on the machine: directory and the window's
+  // own time_created are what make a row this window's, never recency alone.
+  await clearLinks();
+  const t = nowMs();
+  const other = await writeOpenCodeDb([ocIdle(12, t - 1000)], { directory: path.join(os.tmpdir(), 'example-other-project') });
+  const old = await writeOpenCodeDb([ocIdle(12, t - 1000)], { timeCreated: t - 3600_000 });
+  try {
+    const r = await runScript([WID], { OPENCODE_TAB_DB: other.file });
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.out, /state=unknown/);
+    assert.match(r.out, /reason=no-session-file/);
+    // A matching directory but a session older than the window (pty reuse) is
+    // no proof either.
+    const r2 = await runScript([WID], { OPENCODE_TAB_DB: old.file });
+    assert.equal(r2.code, 0, `${r2.out}${r2.err}`);
+    assert.match(r2.out, /state=unknown/);
+  } finally {
+    await fs.rm(other.dir, { recursive: true, force: true });
+    await fs.rm(old.dir, { recursive: true, force: true });
+  }
 });

@@ -17,14 +17,18 @@
 # the text, which no screen rendering can hide, wrap or scroll away. Nine
 # retro rows in eight sessions (09-04 to 09-09) were the echo proof failing
 # exactly that way, and eight single-case fixes each closed one shape while
-# the class recurred. The echo proof below (tail or head fragment newly on
+# the class recurred. An OpenCode tab (v2.0.29+) has no jsonl: its receipt is a
+# NEW type:user row in opencode.db's session_message past the pre-send MAX(seq),
+# carrying the text — the same proof against its own store (see
+# opencode_row_landed). The echo proof below (tail or head fragment newly on
 # screen) runs only when the window has no session file to read — not an
 # omp tab, or the pty link is unproven — and its verdict is exit 10
 # ("typed, not proven submitted"), never "delivered".
 # Exit codes:
-#   0  sent AND proven: a new role:user row in the tab's session file, or
-#      for a Claude Code tab a new user row carrying the text in its
-#      transcript (the only proofs that name the tab receiving the text)
+#   0  sent AND proven: a new role:user row in the tab's session file, for a
+#      Claude Code tab a new user row carrying the text in its transcript, or
+#      for an OpenCode tab a new type:user row in its opencode.db session
+#      (the only proofs that name the tab receiving the text)
 #   1  usage / precondition error (no kitty remote control, no such window)
 #   3  could not prove it landed — sent but unconfirmed, or the screen could
 #      not be read to attempt the proof (nothing is retried for you)
@@ -153,6 +157,10 @@ note() { [ "${QUIET:-0}" = 1 ] || printf '%s\n' "kitty-send: $*" >&2; }
 # $PATH so a copy of the pair in another directory keeps working; absent or
 # failing, every state read below is "unknown" and the spinner decides.
 STATE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/omp-tab-state.sh"
+# The OpenCode store (v2.0.29+), the one proof source an OpenCode tab has: it
+# writes no jsonl and no Claude transcript, only rows in SQLite. Same seam name
+# omp-tab-state.sh and opencode-tab.sh use.
+OPENCODE_TAB_DB="${OPENCODE_TAB_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}"
 # One of busy|idle|exited|unknown. Anything the state script cannot answer —
 # no such window, no session file, unreadable file — is unknown, never fatal
 # here: the spinner fallback below is weaker but still available.
@@ -663,20 +671,30 @@ fi
 # Idle at the send or not: the busy-transition proof in the poll
 # loop below only means something when the target was idle here. A target that
 # was already busy (--now) being busy afterwards proves nothing about this send.
-if title_busy "$title" || [ "$(claude_state_of "$WID")" = busy ]; then WAS_BUSY_BEFORE_SEND=1; else WAS_BUSY_BEFORE_SEND=0; fi
+if title_busy "$title" || [ "$(tab_state_of "$WID")" = busy ] || [ "$(claude_state_of "$WID")" = busy ]; then WAS_BUSY_BEFORE_SEND=1; else WAS_BUSY_BEFORE_SEND=0; fi
 
 # Proof by state: where the tab's session file is linked, the post-send poll
 # waits for a NEW role:user message row past this line count, and the echo
 # proof below is skipped. Unknown (no link) keeps the echo proof, which is
 # the weaker proof — its verdict says so.
 TAB_SESSION=""; TAB_LINES=0; STATE_KNOWN=0
+OPENCODE_TAB=0; OPENCODE_SID=""; OPENCODE_HEAD=""
 if state_json=$(tab_state_json "$WID"); then
   st=$(printf '%s' "$state_json" | jq -r '.state' 2>/dev/null)
   if [ "$st" = "busy" ] || [ "$st" = "idle" ]; then
     TAB_SESSION=$(printf '%s' "$state_json" | jq -r '.session' 2>/dev/null)
     TAB_LINES=$(printf '%s' "$state_json" | jq -r '.lines' 2>/dev/null)
     case "$TAB_LINES" in ''|*[!0-9]*) TAB_LINES=0 ;; esac
-    if [ -n "$TAB_SESSION" ] && [ -f "$TAB_SESSION" ]; then STATE_KNOWN=1; fi
+    case "$TAB_SESSION" in
+      opencode:*)
+        # An OpenCode tab: the session lives in opencode.db, so there is no
+        # file to look for. `lines` is the store's MAX(seq) before this send;
+        # the proof below is a NEW type:user row past it.
+        OPENCODE_TAB=1; OPENCODE_SID="${TAB_SESSION#opencode:}"; STATE_KNOWN=1
+        OPENCODE_HEAD=$(printf '%s' "$TEXT" | cut -c1-40 | tr -d '[:space:]')
+        ;;
+      *) if [ -n "$TAB_SESSION" ] && [ -f "$TAB_SESSION" ]; then STATE_KNOWN=1; fi ;;
+    esac
   fi
 fi
 # A Claude Code tab (see CLAUDE CODE TABS above). Its transcript may not exist
@@ -698,6 +716,30 @@ claude_row_landed() {
     | jq -r 'select(.type == "user") | .message.content
              | if type == "string" then . else ([.[]? | .text? // empty] | join(" ")) end' 2>/dev/null \
     | tr -d '[:space:]' | grep -qF -- "$CLAUDE_HEAD"
+}
+# The same proof for an OpenCode tab, from its own store: a type:user row for
+# this session past the pre-send MAX(seq), whose `text` carries the start of
+# this message. Read-only, so the live WAL store is never disturbed, and the
+# row is written by opencode itself on submit — the tab's own receipt.
+opencode_row_landed() {
+  [ -n "$OPENCODE_SID" ] && [ -n "$OPENCODE_HEAD" ] || return 1
+  [ -r "$OPENCODE_TAB_DB" ] || return 1
+  node - "$OPENCODE_TAB_DB" "$OPENCODE_SID" "$TAB_LINES" "$OPENCODE_HEAD" <<'JS' 2>/dev/null
+process.emitWarning = () => {};
+const { DatabaseSync } = require('node:sqlite');
+const [db, sid, after, head] = process.argv.slice(2);
+const d = new DatabaseSync(db, { readOnly: true });
+const rows = d
+  .prepare("SELECT data FROM session_message WHERE session_id = ? AND seq > ? AND type = 'user' ORDER BY seq ASC")
+  .all(sid, Number(after));
+const want = String(head).replace(/\s+/g, '');
+for (const r of rows) {
+  let text = '';
+  try { text = String(JSON.parse(r.data).text ?? ''); } catch { continue; }
+  if (text.replace(/\s+/g, '').includes(want)) process.exit(0);
+}
+process.exit(1);
+JS
 }
 # Seconds after the first lone \r before the second (see THE send). A test
 # seam as well.
@@ -870,7 +912,11 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   # tab receiving the text. Runs in place of every echo proof below, never
   # beside them: with a linked session file the screen cannot add evidence.
   if [ "$STATE_KNOWN" = 1 ]; then
-    if [ "$CLAUDE_TAB" = 1 ]; then
+    if [ "$OPENCODE_TAB" = 1 ]; then
+      if opencode_row_landed; then
+        confirmed=1; where="proved by opencode.db session_message row (a new type:user message reached $OPENCODE_SID)"; break
+      fi
+    elif [ "$CLAUDE_TAB" = 1 ]; then
       if claude_row_landed; then
         confirmed=1; where="proved by transcript row (a new user prompt with this text reached the Claude Code session's transcript)"; break
       fi
@@ -1002,6 +1048,9 @@ if [ "$STATE_KNOWN" = 1 ] && [ "$WAS_BUSY_BEFORE_SEND" = 1 ]; then
     note "sent to window $WID while it was mid-turn (--now); still mid-turn after ${TIMEOUT}s, so the message is pending in its steering queue — no new role:user row can reach its session file until the tool boundary ($TAB_SESSION, was $TAB_LINES lines)."
     note "Do NOT send it again blind: a second send is what enqueues an empty steering"
     note "message and wedges an agent. Look at the window first."
+    if [ "$OPENCODE_TAB" = 1 ]; then
+      note "(an OpenCode tab: the row would land in opencode.db's session_message for $OPENCODE_SID, past seq $TAB_LINES.)"
+    fi
     exit 8
   fi
 fi
@@ -1014,6 +1063,9 @@ fi
 if [ "$CLAUDE_TAB" = 1 ]; then
   _pressed=""; [ "$CLAUDE_ENTERS" = 0 ] || _pressed=" and pressed $CLAUDE_ENTERS lone Enter(s)"
   note "sent to window $WID (a Claude Code tab)${_pressed}, but no new user prompt with this text reached its transcript within ${TIMEOUT}s ($TAB_SESSION, was $TAB_LINES lines)."
+  note "The text may still sit in its composer: look at the window before sending again."
+elif [ "$OPENCODE_TAB" = 1 ]; then
+  note "sent to window $WID (an OpenCode tab), but no new type:user row with this text reached session $OPENCODE_SID's rows in opencode.db within ${TIMEOUT}s (was seq $TAB_LINES)."
   note "The text may still sit in its composer: look at the window before sending again."
 elif [ "$STATE_KNOWN" = 1 ]; then
   note "sent to window $WID but no new role:user row reached its session file within ${TIMEOUT}s ($TAB_SESSION, was $TAB_LINES lines)."

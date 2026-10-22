@@ -37,6 +37,17 @@
 #           the window); reason= says which, and the caller falls back to the
 #           screen (the spinner), which is the weaker proof
 #
+# An OpenCode tab has no jsonl at all: since v2.0.29 opencode writes its state
+# into SQLite (opencode.db). When the omp link is unproven, this script asks
+# that store before giving up: the newest top-level `session_v2` row whose
+# `directory` is this window's cwd and which was created no earlier than the
+# window, then the newest decisive `session_message` row for it (`idle`,
+# `user`, `assistant` or `shell`) decides idle/busy exactly as a message row
+# does here, and `lines` is the highest `seq` in that session — the counter a
+# send proof watches grow. pty numbers are reused by the OS, which is why a
+# stale pts-N link from an old omp session (cwd-mismatch) must lose to the live
+# database row rather than decide the answer.
+#
 # Decisive vs. ambient rows: a session file also carries rows that name no
 # work in progress on the tab's own turn — advisor commentary, coordination
 # pings, mailbox/hook deliveries recorded for context, todo nudges, skill
@@ -78,6 +89,8 @@
 # directory; OMP_TAB_STATE_SESSIONS_DIR overrides the canonical sessions dir
 # the link arbitration prefers (both default to omp's own directories
 # under $HOME/.omp/agent, because omp writes them, not this repo);
+# OPENCODE_TAB_DB overrides the opencode store (defaults to opencode's own
+# path under $XDG_DATA_HOME, because opencode writes it, not this repo);
 # kitty is resolved from PATH so a stub can serve canned `ls`.
 # OMP_TAB_STATE_PTS_N overrides the /proc readlink (the test's own fd 0 is
 # not a pty it controls). OMP_TAB_STATE_TAIL_LINES overrides how many lines
@@ -95,6 +108,11 @@ note() { printf '%s\n' "omp-tab-state: $*" >&2; }
 TAIL_LINES="${OMP_TAB_STATE_TAIL_LINES:-1000}"
 
 SESSDIR="${OMP_TAB_STATE_DIR:-$HOME/.omp/agent/terminal-sessions}"
+# An OpenCode tab (v2.0.29+) writes no omp jsonl and no Claude transcript: its
+# state is SQLite rows in opencode.db (see read_opencode_state below). Same
+# seam name opencode-tab.sh uses, so a test or a caller can point both at one
+# fixture store.
+OPENCODE_TAB_DB="${OPENCODE_TAB_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}"
 # The sibling that owns the alive-jobs walk. Resolved from this file rather
 # than $PATH so a copy of the pair in another directory keeps working, the
 # same way kitty-send.sh resolves this script.
@@ -278,11 +296,99 @@ validate_link() {
   return 0
 }
 
+# --- state from opencode's store, for a tab with no jsonl -----------------------
+# read_opencode_state answers for an OpenCode tab (v2.0.29+), which writes no
+# per-tab file: its session and message rows are in opencode.db. Sets STATE,
+# TOOL, SESSION, SOURCE, LINES, AGE_S, REASON, LINK_REASON, JOBS_COUNT and
+# JOBS_JSON on success and returns 0; on any miss it returns 1 having touched
+# NOTHING, so the caller's own reason (cwd-mismatch, no-session-file) stands.
+#
+# Which session: the newest top-level row in `session_v2` whose directory is
+# this window's cwd and whose time_created is no earlier than the window (5 s
+# of slack for the two clocks), because pty numbers — and therefore this
+# window's pid — are reused by the OS.
+# Which state: the newest decisive `session_message` for that session, in the
+# same sense as a decisive jsonl row. `idle` is opencode saying the turn
+# finished; anything else it wrote while working (user, assistant, shell) is
+# busy, and the tool name comes from the last tool in the newest assistant
+# row's content. `lines` is MAX(seq), the counter a send proof grows past.
+read_opencode_state() {
+  [ -n "${OPENCODE_TAB_DB:-}" ] && [ -r "$OPENCODE_TAB_DB" ] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  SINCE=$(( WCREATED_NS / 1000000 - 5000 ))
+  OC=$(node - "$OPENCODE_TAB_DB" "$WCWD" "$SINCE" <<'JS' 2>/dev/null
+process.emitWarning = () => {};
+const { DatabaseSync } = require('node:sqlite');
+const [db, cwd, since] = process.argv.slice(2);
+const d = new DatabaseSync(db, { readOnly: true });
+const s = d
+  .prepare('SELECT id, time_idle FROM session_v2 WHERE directory = ? AND parent_id IS NULL AND time_created >= ? ORDER BY time_created DESC LIMIT 1')
+  .get(cwd, Number(since));
+if (!s) process.exit(1);
+const rows = d
+  .prepare('SELECT type, seq, time_created, data FROM session_message WHERE session_id = ? ORDER BY seq DESC, time_created DESC LIMIT 20')
+  .all(s.id);
+const lines = d.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM session_message WHERE session_id = ?').get(s.id).m;
+const decisive = rows.find((r) => ['idle', 'user', 'assistant', 'shell'].includes(r.type));
+let state = 'idle';
+let tool = '-';
+let ts = Number(s.time_idle || 0);
+if (decisive) {
+  ts = Number(decisive.time_created) || ts;
+  state = decisive.type === 'idle' ? 'idle' : 'busy';
+} else if (!s.time_idle) {
+  state = 'busy';
+}
+if (state === 'busy') {
+  const a = rows.find((r) => r.type === 'assistant');
+  if (a) {
+    try {
+      const content = JSON.parse(a.data).content;
+      if (Array.isArray(content)) {
+        const last = [...content].reverse().find((c) => c && c.type === 'tool');
+        if (last && last.name) tool = String(last.name);
+      }
+    } catch { /* unparseable data names no tool */ }
+  }
+}
+console.log([state, tool, ts, s.id, lines].join('\t'));
+JS
+) || return 1
+  OC_STATE=$(printf '%s' "$OC" | cut -f1)
+  [ -n "$OC_STATE" ] || return 1
+  STATE="$OC_STATE"
+  TOOL=$(printf '%s' "$OC" | cut -f2); [ -n "$TOOL" ] || TOOL="-"
+  OC_TS=$(printf '%s' "$OC" | cut -f3)
+  SESSION="opencode:$(printf '%s' "$OC" | cut -f4)"
+  LINES=$(printf '%s' "$OC" | cut -f5)
+  case "$LINES" in ''|*[!0-9]*) LINES=0 ;; esac
+  case "$OC_TS" in ''|*[!0-9]*) OC_TS=0 ;; esac
+  SOURCE="opencode-db"; REASON=""; LINK_REASON=""
+  # opencode's store names no background-job concept a probe could walk on this
+  # tab's behalf, and its own row is the proof: 0 jobs alive, not "unknown".
+  JOBS_COUNT="0"; JOBS_JSON="[]"
+  NOW=$(date +%s)
+  AGE_S=$(( (NOW * 1000 - OC_TS) / 1000 ))
+  [ "$AGE_S" -lt 0 ] && AGE_S=0
+  return 0
+}
+
 if [ "$WATCH" != 1 ]; then
-  validate_link || case "$?" in
-    1) unknown_link "$REASON" ;;
-    *) STATE=unknown; TOOL="-"; REASON="unreadable-session-file"; LINES=0; AGE_S=0; report_state; exit 2 ;;
-  esac
+  validate_link; VALIDATE_RC=$?
+  if [ "$VALIDATE_RC" != 0 ]; then
+    case "$VALIDATE_RC" in
+      1)
+        # Not an omp tab: it may be an OpenCode one (see the header). A live
+        # database row for this window's cwd outranks the stale-pty miss.
+        if read_opencode_state; then
+          report_state
+          exit 0
+        fi
+        unknown_link "$REASON"
+        ;;
+      *) STATE=unknown; TOOL="-"; REASON="unreadable-session-file"; LINES=0; AGE_S=0; report_state; exit 2 ;;
+    esac
+  fi
 fi
 
 # --- state from the tail, last row wins ------------------------------------------
@@ -354,6 +460,8 @@ if [ "$WATCH" = 1 ]; then
       else
         JOBS_COUNT="unknown"; JOBS_JSON='"unknown"'
       fi
+    elif read_opencode_state; then
+      : # STATE/TOOL/SESSION/LINES/AGE_S and jobs=0 are set by the reader
     else
       JOBS_COUNT="unknown"; JOBS_JSON='"unknown"'
     fi
