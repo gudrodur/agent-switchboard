@@ -176,42 +176,13 @@ tab_state_json() { # $1 = window id
   "$STATE_SH" "$1" --json 2>/dev/null || return 1
 }
 
-# CLAUDE CODE TABS (#38). A Claude Code window is not an omp tab, so the state
-# script above answers unknown for it, but it has its own state on disk: the
-# `claude` process writes <config>/sessions/<pid>.json (sessionId, cwd, status
-# busy|idle) and every turn to <config>/projects/<cwd with every character
-# outside [A-Za-z0-9-] as '-'>/<sessionId>.jsonl. So a Claude tab is proved the
-# way an omp tab is: a NEW user row in that transcript, past the pre-send line
-# count, carrying the start of this message. Its title is no help: it reads
-# "✳ …" idle and "◐ …" busy, no braille spinner, so the status field is what
-# the busy gate reads for it.
-CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-CLAUDE_SESSIONS_DIR="${KITTY_SEND_CLAUDE_SESSIONS_DIR:-$CLAUDE_DIR/sessions}"
-CLAUDE_PROJECTS_DIR="${KITTY_SEND_CLAUDE_PROJECTS_DIR:-$CLAUDE_DIR/projects}"
-# The session record of the claude process in this window, or exit 1.
-claude_session_json() { # $1 = window id
-  local pid f
-  pid=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$1" '
-    .[].tabs[].windows[] | select(.id == $id) | .foreground_processes[]?
-    | select((.cmdline[0] // "") | test("(^|/)claude$")) | .pid' 2>/dev/null | head -1)
-  [ -n "$pid" ] || return 1
-  f="$CLAUDE_SESSIONS_DIR/$pid.json"
-  jq -e '.sessionId and .cwd' "$f" >/dev/null 2>&1 || return 1
-  cat "$f"
-}
-claude_state_of() { # $1 = window id; busy|idle|unknown
-  local j
-  j=$(claude_session_json "$1") || { printf 'unknown'; return 0; }
-  case "$(printf '%s' "$j" | jq -r '.status // ""' 2>/dev/null)" in
-    busy) printf 'busy' ;; idle) printf 'idle' ;; *) printf 'unknown' ;;
-  esac
-}
-claude_transcript_of() { # $1 = session json
-  local sid cwd
-  sid=$(printf '%s' "$1" | jq -r '.sessionId')
-  cwd=$(printf '%s' "$1" | jq -r '.cwd')
-  printf '%s/%s/%s.jsonl' "$CLAUDE_PROJECTS_DIR" "$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9-]/-/g')" "$sid"
-}
+# CLAUDE CODE TABS (#38). The session record and transcript readers live in
+# lib/claude-session.sh, shared with omp-tab-state.sh. A Claude tab is proved
+# the way an omp tab is: a NEW user row in its transcript, past the pre-send
+# line count, carrying the start of this message. Its title is no help: it
+# reads "✳ …" idle and "◐ …" busy, no braille spinner, so the status field is
+# what the busy gate reads for it.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/claude-session.sh"
 usage() {
   cat <<'KITTY_SEND_USAGE'
 Usage:
@@ -679,7 +650,20 @@ if title_busy "$title" || [ "$(tab_state_of "$WID")" = busy ] || [ "$(claude_sta
 # the weaker proof — its verdict says so.
 TAB_SESSION=""; TAB_LINES=0; STATE_KNOWN=0
 OPENCODE_TAB=0; OPENCODE_SID=""; OPENCODE_HEAD=""
-if state_json=$(tab_state_json "$WID"); then
+# A Claude Code tab (see CLAUDE CODE TABS above) is asked first: omp-tab-state
+# reports its status too, but the send proof below needs CLAUDE_TAB, which the
+# omp-shaped branch does not set. Its transcript may not exist yet in a fresh
+# session, which writes it with the first prompt: that is line count 0, not
+# unknown.
+CLAUDE_TAB=0; CLAUDE_HEAD=""
+if claude_json=$(claude_session_json "$WID"); then
+  TAB_SESSION=$(claude_transcript_of "$claude_json")
+  TAB_LINES=0
+  [ -f "$TAB_SESSION" ] && TAB_LINES=$(wc -l < "$TAB_SESSION")
+  STATE_KNOWN=1; CLAUDE_TAB=1
+  CLAUDE_HEAD=$(printf '%s' "$TEXT" | cut -c1-40 | tr -d '[:space:]')
+fi
+if [ "$CLAUDE_TAB" = 0 ] && state_json=$(tab_state_json "$WID"); then
   st=$(printf '%s' "$state_json" | jq -r '.state' 2>/dev/null)
   if [ "$st" = "busy" ] || [ "$st" = "idle" ]; then
     TAB_SESSION=$(printf '%s' "$state_json" | jq -r '.session' 2>/dev/null)
@@ -696,17 +680,6 @@ if state_json=$(tab_state_json "$WID"); then
       *) if [ -n "$TAB_SESSION" ] && [ -f "$TAB_SESSION" ]; then STATE_KNOWN=1; fi ;;
     esac
   fi
-fi
-# A Claude Code tab (see CLAUDE CODE TABS above). Its transcript may not exist
-# yet in a fresh session, which writes it with the first prompt: that is line
-# count 0, not unknown.
-CLAUDE_TAB=0; CLAUDE_HEAD=""
-if [ "$STATE_KNOWN" = 0 ] && claude_json=$(claude_session_json "$WID"); then
-  TAB_SESSION=$(claude_transcript_of "$claude_json")
-  TAB_LINES=0
-  [ -f "$TAB_SESSION" ] && TAB_LINES=$(wc -l < "$TAB_SESSION")
-  STATE_KNOWN=1; CLAUDE_TAB=1
-  CLAUDE_HEAD=$(printf '%s' "$TEXT" | cut -c1-40 | tr -d '[:space:]')
 fi
 # Does a user row past the pre-send count carry this message's start? The
 # text match is what keeps a tool result or a task notification (also

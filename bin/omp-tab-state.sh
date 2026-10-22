@@ -37,6 +37,16 @@
 #           the window); reason= says which, and the caller falls back to the
 #           screen (the spinner), which is the weaker proof
 #
+# A Claude Code tab has no omp link either, and is asked FIRST (a stale pts-N
+# link from an old omp session must not decide for it). When the window's
+# foreground process is `claude`, <config>/sessions/<pid>.json decides: its
+# status busy|idle is the state (anything else is unknown with
+# reason=claude-status-<value>), session= is the transcript path, lines= its
+# line count, age= the seconds since statusUpdatedAt, source=claude. A record
+# whose startedAt predates the window is unknown reason=session-older-than-window.
+# tool= is "-" and jobs are unknown: both are omp concepts. The record and
+# transcript readers are lib/claude-session.sh, shared with kitty-send.sh.
+#
 # An OpenCode tab has no jsonl at all: since v2.0.29 opencode writes its state
 # into SQLite (opencode.db). When the omp link is unproven, this script asks
 # that store before giving up: the newest top-level `session_v2` row whose
@@ -85,7 +95,8 @@
 #   1  usage error, or no such window (the window is gone; nothing to link)
 #   2  the session file is unreadable (present but cannot be read or parsed)
 #
-# Env seams: OMP_TAB_STATE_DIR overrides the terminal-sessions
+# Env seams: CLAUDE_CONFIG_DIR, CLAUDE_SESSIONS_DIR and CLAUDE_PROJECTS_DIR
+# locate Claude Code's records (see lib/claude-session.sh); OMP_TAB_STATE_DIR overrides the terminal-sessions
 # directory; OMP_TAB_STATE_SESSIONS_DIR overrides the canonical sessions dir
 # the link arbitration prefers (both default to omp's own directories
 # under $HOME/.omp/agent, because omp writes them, not this repo);
@@ -108,7 +119,7 @@ note() { printf '%s\n' "omp-tab-state: $*" >&2; }
 TAIL_LINES="${OMP_TAB_STATE_TAIL_LINES:-1000}"
 
 SESSDIR="${OMP_TAB_STATE_DIR:-$HOME/.omp/agent/terminal-sessions}"
-# An OpenCode tab (v2.0.29+) writes no omp jsonl and no Claude transcript: its
+# An OpenCode tab (v2.0.29+) writes no omp jsonl and no Claude record: its
 # state is SQLite rows in opencode.db (see read_opencode_state below). Same
 # seam name opencode-tab.sh uses, so a test or a caller can point both at one
 # fixture store.
@@ -117,6 +128,9 @@ OPENCODE_TAB_DB="${OPENCODE_TAB_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencod
 # than $PATH so a copy of the pair in another directory keeps working, the
 # same way kitty-send.sh resolves this script.
 SDIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# A Claude Code tab's session record and transcript readers, shared with
+# kitty-send.sh (it also fixes the CLAUDE_SESSIONS_DIR/CLAUDE_PROJECTS_DIR seams).
+. "$SDIR/../lib/claude-session.sh"
 WID=""; JSON=0; WATCH=0; INTERVAL=5
 case "${1:-}" in ''|*[!0-9]*) die "usage: omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]" ;; *) WID="$1"; shift ;; esac
 while [ $# -gt 0 ]; do
@@ -212,7 +226,6 @@ resolve_candidates() { # sets SOURCE SESSION LINK_REASON from the link files
     SESSION="$P_CAND"
   fi
 }
-resolve_candidates
 # Alive background jobs at end of file, for idle and exited states only.
 # Sets JOBS_COUNT (a number, or "unknown") and JOBS_JSON (a JSON array of
 # ids, or the string "unknown"). Anything the probe cannot answer is
@@ -296,6 +309,45 @@ validate_link() {
   return 0
 }
 
+# --- state from Claude Code's own session record -------------------------------
+# read_claude_state answers for a window whose foreground process is `claude`
+# (lib/claude-session.sh finds <pid>.json from the ls table window_info
+# already fetched). Returns 1 having touched nothing when the window is not a
+# Claude Code tab, so the omp link resolution below runs as before. Otherwise
+# returns 0 with STATE/REASON set: busy|idle from the record's status, unknown
+# reason=claude-status-<value> for any other status, and unknown
+# reason=session-older-than-window when the record's startedAt predates the
+# window (a pid reused by an older claude), the same rule validate_link applies
+# to an omp session. SESSION is the transcript path, LINES its line count (0
+# before the first turn), AGE_S the seconds since statusUpdatedAt. Jobs are an
+# omp concept: unknown, never 0.
+read_claude_state() {
+  local cj st started updated now
+  cj=$(claude_session_json "$WID" "$WIN_JSON") || return 1
+  SOURCE="claude"; LINK_REASON=""; REASON=""; TOOL="-"; LINES=0; AGE_S=0
+  JOBS_COUNT="unknown"; JOBS_JSON='"unknown"'
+  SESSION=$(claude_transcript_of "$cj")
+  [ -f "$SESSION" ] && LINES=$(wc -l < "$SESSION" | tr -d ' ')
+  case "$LINES" in ''|*[!0-9]*) LINES=0 ;; esac
+  started=$(printf '%s' "$cj" | jq -r '.startedAt // 0' 2>/dev/null)
+  case "$started" in ''|*[!0-9]*) started=0 ;; esac
+  WCREATED_S=$(( WCREATED_NS / 1000000000 ))
+  if [ "$WCREATED_S" -gt 0 ] && [ $(( started / 1000 )) -lt "$WCREATED_S" ]; then
+    STATE=unknown; REASON="session-older-than-window"; LINES=0
+    return 0
+  fi
+  updated=$(printf '%s' "$cj" | jq -r '.statusUpdatedAt // 0' 2>/dev/null)
+  case "$updated" in ''|*[!0-9]*) updated=0 ;; esac
+  now=$(date +%s)
+  if [ "$updated" -gt 0 ]; then AGE_S=$(( now - updated / 1000 )); [ "$AGE_S" -lt 0 ] && AGE_S=0; fi
+  st=$(printf '%s' "$cj" | jq -r '.status // ""' 2>/dev/null)
+  case "$st" in
+    busy|idle) STATE="$st" ;;
+    *) STATE=unknown; REASON="claude-status-${st:-none}" ;;
+  esac
+  return 0
+}
+
 # --- state from opencode's store, for a tab with no jsonl -----------------------
 # read_opencode_state answers for an OpenCode tab (v2.0.29+), which writes no
 # per-tab file: its session and message rows are in opencode.db. Sets STATE,
@@ -374,6 +426,13 @@ JS
 }
 
 if [ "$WATCH" != 1 ]; then
+  # A Claude Code window has its own record and no omp link to resolve: ask it
+  # first, since a stale pts-N link from an old omp session would otherwise win.
+  if read_claude_state; then
+    report_state
+    exit 0
+  fi
+  resolve_candidates
   validate_link; VALIDATE_RC=$?
   if [ "$VALIDATE_RC" != 0 ]; then
     case "$VALIDATE_RC" in
@@ -453,8 +512,9 @@ if [ "$WATCH" = 1 ]; then
       printf 'window %s state=gone reason=no-such-window\n' "$WID"
       exit 0
     fi
-    resolve_candidates
-    if validate_link; then
+    if read_claude_state; then
+      : # STATE/SESSION/LINES/AGE_S and jobs=unknown are set by the reader
+    elif resolve_candidates; validate_link; then
       if read_state_once; then
         probe_alive_jobs
       else

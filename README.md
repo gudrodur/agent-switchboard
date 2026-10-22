@@ -19,7 +19,7 @@ A mailbox with acks between agents on three runtimes (Claude Code, omp and Codex
 | Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at turn start or while parked in omp, at each prompt in Claude Code and in Codex. | `hooks/omp/pre/mailbox.ts`, `hooks/claude/mailbox-inject.mjs`, `hooks/codex/mailbox.mjs` |
 | Terminal if no ack | Terminal remote control: types the message into the window. Delivery is proven by a new inbound row in that tab's session file. | `bin/kitty-send.sh` |
 | Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. The Claude Code launcher passes the brief as the initial prompt, can turn Remote Control on, and proves the start from the session's own transcript. | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh` |
-| Read state | Not the screen but the disk: the window's process, its terminal, the runtime's terminal-sessions link to the session file, and that session file, whose last decisive row is the state. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
+| Read state | Not the screen but the disk: the window's process, its terminal, the runtime's terminal-sessions link to the session file, and that session file, whose last decisive row is the state. A Claude Code window is read from Claude's own session record (`status` busy or idle) and transcript instead. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
 | Files | Plain files every agent can read: plan, briefs, steers, reports, logs. | a directory the agents share |
 | Shared record | The `gh` command line: issues, pull requests, checks, merges. | `gh` |
 | Approval path | The host agent's own hold screen for a message between sessions in different permission modes. | The host agent's settings file |
@@ -144,6 +144,7 @@ Every variable, its default, and what reads it — taken from the code, not from
 | `AGENT_CONFIG_HOME` | `$HOME/agent-config`, else `$HOME/.claude` | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh`: where `scripts/task-claim.mjs` lives |
 | `OMP_TAB_TASK_CLAIM` | `$AGENT_CONFIG_HOME/scripts/task-claim.mjs` | the three launchers: the brief-claim CLI; a missing one is a loud skip |
 | `CLAUDE_SESSION_ID` | unset, then `KITTY_WINDOW_ID` | the three launchers: the launcher id written into each state row |
+| `CLAUDE_SESSIONS_DIR`, `CLAUDE_PROJECTS_DIR` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions`, `.../projects` | `lib/claude-session.sh` (`bin/omp-tab-state.sh`, `bin/kitty-send.sh`): Claude Code's per-pid session records and transcripts, read-only; `KITTY_SEND_CLAUDE_SESSIONS_DIR` and `KITTY_SEND_CLAUDE_PROJECTS_DIR` still win |
 | `OMP_TAB_STATE_DIR` | `$HOME/.omp/agent/terminal-sessions` | `bin/omp-tab-state.sh`: window-to-session links (omp's own directory — omp writes them, not this repo) |
 | `OMP_TAB_STATE_SESSIONS_DIR` | `$HOME/.omp/agent/sessions` | `bin/omp-tab-state.sh`: canonical sessions dir the link arbitration prefers |
 | `CLAUDE_CODE_SESSION_ID` | null (address by cwd only) | `hooks/claude/mailbox-inject.mjs`, `bin/agent-send.mjs`: host-agent session identity |

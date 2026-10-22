@@ -88,7 +88,9 @@ before(async () => {
     '  if [ -f "$state/no-window" ]; then printf \'[]\\n\'; exit 0; fi',
     '  pid=$(cat "$state/pid")',
     '  created=$(cat "$state/created" 2>/dev/null || date +%s%N)',
-    `  printf '[{"tabs":[{"title":"mock","windows":[{"id":${WID},"title":"mock","pid":%s,"cwd":${JSON.stringify(WCWD)},"created_at":%s}]}]}]\\n' "$pid" "$created"`,
+    '  fg=\'[]\'',
+    '  [ -f "$state/claude-pid" ] && fg=$(printf \'[{"pid":%s,"cmdline":["/usr/bin/claude"]}]\' "$(cat "$state/claude-pid")")',
+    `  printf '[{"tabs":[{"title":"mock","windows":[{"id":${WID},"title":"mock","pid":%s,"cwd":${JSON.stringify(WCWD)},"created_at":%s,"foreground_processes":%s}]}]}]\\n' "$pid" "$created" "$fg"`,
     '  exit 0',
     'fi',
     'exit 0',
@@ -111,7 +113,7 @@ const linkPts = (n, name) =>
   fs.writeFile(path.join(sessDir, `pts-${n}`), `${WCWD}\n${path.join(sessDir, name)}\n`);
 const clearLinks = async () => {
   for (const f of await fs.readdir(sessDir)) {
-    if (f.startsWith('kitty-') || f.startsWith('pts-') || f === 'no-window') {
+    if (f.startsWith('kitty-') || f.startsWith('pts-') || f === 'no-window' || f === 'claude-pid') {
       await fs.rm(path.join(sessDir, f), { force: true });
     }
   }
@@ -122,7 +124,8 @@ const runScript = async (args, extraEnv = {}) => {
     const r = await run(SCRIPT, args, {
       env: isolatedEnv({
         PATH: `${binDir}:${process.env.PATH}`,
-        OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB(), ...extraEnv,
+        OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB(),
+        CLAUDE_SESSIONS_DIR: path.join(sessDir, 'claude-sessions'), CLAUDE_PROJECTS_DIR: path.join(sessDir, 'claude-projects'), ...extraEnv,
       }),
       timeout: 30_000,
     });
@@ -719,4 +722,98 @@ test('an opencode session for another directory is not this window\'s state', as
     await fs.rm(other.dir, { recursive: true, force: true });
     await fs.rm(old.dir, { recursive: true, force: true });
   }
+});
+
+// CLAUDE CODE TABS. A window whose foreground process is `claude` has no omp
+// link; its state is <sessions>/<pid>.json (status busy|idle, startedAt and
+// statusUpdatedAt in epoch ms) and a transcript under <projects>/<cwd slug>/.
+const CLAUDE_PID = 424242;
+const CLAUDE_SID = '5e55-claude-test';
+const claudeSlug = WCWD.replace(/[^A-Za-z0-9-]/g, '-');
+const claudeTranscript = () => path.join(sessDir, 'claude-projects', claudeSlug, `${CLAUDE_SID}.jsonl`);
+const setupClaude = async ({ status = 'idle', startedAt = nowMs(), transcript = true } = {}) => {
+  await clearLinks();
+  await fs.rm(path.join(sessDir, 'claude-sessions'), { recursive: true, force: true });
+  await fs.rm(path.join(sessDir, 'claude-projects'), { recursive: true, force: true });
+  await fs.mkdir(path.join(sessDir, 'claude-sessions'), { recursive: true });
+  await fs.writeFile(path.join(sessDir, 'claude-pid'), String(CLAUDE_PID));
+  await fs.writeFile(path.join(sessDir, 'claude-sessions', `${CLAUDE_PID}.json`), JSON.stringify({
+    pid: CLAUDE_PID, sessionId: CLAUDE_SID, cwd: WCWD, startedAt, status, statusUpdatedAt: nowMs() - 7000,
+  }));
+  if (transcript) {
+    await fs.mkdir(path.dirname(claudeTranscript()), { recursive: true });
+    await fs.writeFile(claudeTranscript(), '{"type":"user"}\n{"type":"assistant"}\n{"type":"user"}\n');
+  }
+};
+
+test('a claude window with status busy reports busy from the sessions file', async () => {
+  await setupClaude({ status: 'busy' });
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /state=busy/);
+  assert.match(r.out, /age=[5-9]s/);
+  assert.match(r.out, /lines=3/);
+  assert.ok(r.out.includes(`session=${claudeTranscript()}`), r.out);
+});
+
+test('a claude window with status idle reports idle', async () => {
+  await setupClaude({ status: 'idle' });
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /state=idle/);
+});
+
+test('claude --json carries the usual keys with source claude', async () => {
+  await setupClaude({ status: 'idle' });
+  const r = await runScript([WID, '--json']);
+  assert.equal(r.code, 0, r.err);
+  const j = JSON.parse(r.out);
+  assert.deepEqual(Object.keys(j).sort(), ['age_s', 'jobs', 'lines', 'pid', 'reason', 'session', 'source', 'state', 'tool', 'window']);
+  assert.equal(j.source, 'claude');
+  assert.equal(j.state, 'idle');
+  assert.equal(j.lines, 3);
+  assert.equal(j.session, claudeTranscript());
+  assert.equal(j.jobs, 'unknown');
+});
+
+test('a claude status that is neither busy nor idle reports unknown with the value', async () => {
+  await setupClaude({ status: 'waiting' });
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /state=unknown reason=claude-status-waiting source=claude/);
+});
+
+test('a claude sessions file older than the window reports session-older-than-window', async () => {
+  await setupClaude({ status: 'busy', startedAt: nowMs() - 3_600_000 });
+  const r = await runScript([WID]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /state=unknown reason=session-older-than-window source=claude/);
+});
+
+test('a claude window without a transcript yet reports lines=0', async () => {
+  await setupClaude({ status: 'idle', transcript: false });
+  const r = await runScript([WID, '--json']);
+  assert.equal(JSON.parse(r.out).lines, 0);
+});
+
+test('--watch reads a claude window through the same path', async () => {
+  await setupClaude({ status: 'idle' });
+  const sessFile = path.join(sessDir, 'claude-sessions', `${CLAUDE_PID}.json`);
+  const child = spawn(SCRIPT, [WID, '--watch', '--interval=1'], {
+    env: isolatedEnv({
+      PATH: `${binDir}:${process.env.PATH}`, OMP_TAB_STATE_DIR: sessDir, OMP_TAB_STATE_PTS_N: '', OPENCODE_TAB_DB: NO_OPENCODE_DB(),
+      CLAUDE_SESSIONS_DIR: path.join(sessDir, 'claude-sessions'), CLAUDE_PROJECTS_DIR: path.join(sessDir, 'claude-projects'),
+    }),
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  await new Promise((r) => setTimeout(r, 2500));
+  const j = JSON.parse(await fs.readFile(sessFile, 'utf8'));
+  await fs.writeFile(sessFile, JSON.stringify({ ...j, status: 'busy' }));
+  await new Promise((r) => setTimeout(r, 2500));
+  child.kill();
+  await new Promise((r) => child.on('close', r));
+  const lines = out.trim().split('\n');
+  assert.deepEqual(lines.map((l) => /state=([a-z]+)/.exec(l)?.[1]), ['idle', 'busy']);
+  assert.ok(lines.every((l) => l.includes(claudeTranscript())), out);
 });
