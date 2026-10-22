@@ -20,6 +20,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -85,7 +86,7 @@ const reset = async (after = null, opts = {}) => {
 const runScript = async (args, extraEnv = {}) => {
   try {
     const r = await run(SCRIPT, args, {
-      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...extraEnv }),
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, OPENCODE_TAB_DB: path.join(stateDir, 'no-such-opencode.db'), ...extraEnv }),
       timeout: 30_000,
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -217,7 +218,7 @@ test('a new role:user row in the session file proves the send', async () => {
   await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
   try {
     const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the tab', '--timeout', '8'], {
-      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...stateEnv() }),
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, OPENCODE_TAB_DB: path.join(stateDir, 'no-such-opencode.db'), ...stateEnv() }),
     });
     await new Promise((r) => setTimeout(r, 1500));
     await fs.appendFile(stateFile(), sUser(Date.now()) + '\n');
@@ -272,7 +273,7 @@ test('a --now send to a mid-turn tab still confirms when the row lands at the to
   await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
   try {
     const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the tab', '--timeout', '8', '--now'], {
-      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, ...stateEnv() }),
+      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, OPENCODE_TAB_DB: path.join(stateDir, 'no-such-opencode.db'), ...stateEnv() }),
     });
     await new Promise((r) => setTimeout(r, 1500));
     await fs.appendFile(stateFile(), sUser(Date.now()) + '\n');
@@ -284,5 +285,95 @@ test('a --now send to a mid-turn tab still confirms when the row lands at the to
     assert.match(r.err, /proved by session row/);
   } finally {
     await unlinkState();
+  }
+});
+
+// ---- an OpenCode tab: its receipt is a row in opencode.db ---------------------
+//
+// No jsonl, no Claude transcript: opencode (v2.0.29+) writes session_v2 and
+// session_message into its own SQLite store, and omp-tab-state.sh reports
+// session=opencode:<sid> with lines=MAX(seq). The proof is a NEW type:user row
+// past that seq whose text carries the message's start — the tab's own receipt,
+// and the same do-not-resend discipline as every other proof here.
+const OC_SID = 'ses_proof000000000000opencode';
+const ocDir = () => path.join(stateDir, 'opencode-fixture');
+const ocDb = () => path.join(ocDir(), 'opencode.db');
+const writeOcStore = async (rows) => {
+  await fs.mkdir(ocDir(), { recursive: true });
+  await fs.rm(ocDb(), { force: true });
+  const db = new DatabaseSync(ocDb());
+  db.exec(`CREATE TABLE session_v2 (
+    id TEXT PRIMARY KEY, directory TEXT, model TEXT, parent_id TEXT,
+    time_created INTEGER, time_updated INTEGER, time_idle INTEGER, idle_outcome TEXT)`);
+  db.exec(`CREATE TABLE session_message (
+    id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+    time_created INTEGER, time_updated INTEGER, data TEXT)`);
+  const now = Date.now();
+  // The stub window carries no created_at, so omp-tab-state.sh's pty-reuse
+  // check is skipped and this row is this window's by directory alone.
+  db.prepare('INSERT INTO session_v2 (id, directory, model, parent_id, time_created, time_updated, time_idle, idle_outcome) VALUES (?,?,?,?,?,?,?,?)')
+    .run(OC_SID, '/tmp/kitty-proof-cwd', '{"id":"m","providerID":"opencode"}', null, now, now, now, 'succeeded');
+  const ins = db.prepare('INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?,?,?,?,?,?,?)');
+  rows.forEach((r, i) => ins.run(`m-${i}`, OC_SID, r.type, r.seq, now, now, JSON.stringify(r.data)));
+  db.close();
+};
+const ocAppendUser = async (text, seq) => {
+  const now = Date.now();
+  const db = new DatabaseSync(ocDb());
+  db.prepare('INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?,?,?,?,?,?,?)')
+    .run(`m-${seq}`, OC_SID, 'user', seq, now, now, JSON.stringify({ time: { created: now }, text }));
+  db.close();
+};
+const ocIdleRow = { type: 'idle', seq: 12, data: { time: { created: Date.now() }, outcome: 'succeeded' } };
+
+test('a new type:user row in opencode.db proves the send', async () => {
+  await reset();
+  await unlinkState();
+  await writeOcStore([ocIdleRow]);
+  try {
+    const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the opencode tab', '--timeout', '8'], {
+      env: isolatedEnv({
+        PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir,
+        OMP_TAB_STATE_DIR: stateDir, OPENCODE_TAB_DB: ocDb(),
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 2500));
+    await ocAppendUser('plain note for the opencode tab', 20);
+    const r = await p.then(
+      (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
+      (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
+    );
+    assert.equal(r.code, 0, `${r.out}${r.err}`);
+    assert.match(r.err, /proved by opencode\.db session_message row/);
+    assert.match(r.err, new RegExp(OC_SID));
+  } finally {
+    await fs.rm(ocDir(), { recursive: true, force: true });
+  }
+});
+
+test('an opencode tab whose store gains no matching row is exit 3, not delivered', async () => {
+  await reset();
+  await unlinkState();
+  await writeOcStore([ocIdleRow]);
+  try {
+    // A row DOES land, but it is another prompt: without the text match it
+    // would be a false green, which is the one wrong answer here.
+    const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the opencode tab', '--timeout', '5'], {
+      env: isolatedEnv({
+        PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir,
+        OMP_TAB_STATE_DIR: stateDir, OPENCODE_TAB_DB: ocDb(),
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 2000));
+    await ocAppendUser('a completely different prompt', 20);
+    const r = await p.then(
+      (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
+      (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
+    );
+    assert.equal(r.code, 3, `${r.out}${r.err}`);
+    assert.match(r.err, /no new type:user row with this text/);
+    assert.match(r.err, /Do NOT send it again blind/);
+  } finally {
+    await fs.rm(ocDir(), { recursive: true, force: true });
   }
 });
