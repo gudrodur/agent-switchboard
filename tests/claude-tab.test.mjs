@@ -50,6 +50,7 @@ before(async () => {
       '        if [ -f "$state/gone" ]; then echo "[]"; else printf \'%s\\n\' ' + JSON.stringify(lsJson) + '; fi ;;',
       '  @/launch) printf \'%s\\n\' "$@" > "$state/launch-args"',
       '            [ -f "$state/session.jsonl" ] && mkdir -p "$tdir" && cp "$state/session.jsonl" "$tdir/new-session.jsonl"',
+      '            [ -x "$state/on-launch" ] && "$state/on-launch"',
       '            echo ' + WID + ' ;;',
       '  @/close-window) printf \'%s\\n\' "$*" > "$state/closed" ;;',
       'esac',
@@ -68,8 +69,8 @@ after(async () => {
 });
 
 beforeEach(async () => {
-  for (const f of ['launch-args', 'closed', 'nokitty', 'gone', 'session.jsonl', 'omp-tab-launched.' + os.userInfo().uid]) {
-    await fs.rm(path.join(stateDir, f), { force: true });
+  for (const f of ['launch-args', 'closed', 'nokitty', 'gone', 'session.jsonl', 'on-launch', 'sessions', 'omp-tab-launched.' + os.userInfo().uid]) {
+    await fs.rm(path.join(stateDir, f), { recursive: true, force: true });
   }
   await fs.rm(projects, { recursive: true, force: true });
   await trust(path.dirname(cwd));
@@ -101,6 +102,7 @@ const tab = async (args) => {
         CLAUDE_SESSION_ID: 'test-launcher',
         CLAUDE_TAB_PROJECTS: projects,
         CLAUDE_TAB_CONFIG: config,
+        CLAUDE_SESSIONS_DIR: path.join(stateDir, 'sessions'),
         OMP_TAB_TASK_CLAIM: path.join(stateDir, 'no-claim-cli.mjs'),
       }),
     });
@@ -192,6 +194,22 @@ test('a full model id must match exactly, context suffix aside', async () => {
   await fs.rm(projects, { recursive: true, force: true });
   const bad = await tab(['--title', 't', '--brief', brief, '--model', 'claude-opus-5', '--cwd', cwd]);
   assert.equal(bad.code, 3);
+});
+
+// Claude Code 2.1.309 writes api-request rows before the first assistant turn,
+// and their tool list names the advisor's model (measured 2026-10-23): a haiku
+// tab was closed as "on claude-opus-5-5". Only an assistant row's model counts.
+test('a model named in an api-request row is not the session\'s model', async () => {
+  const rows = [
+    { type: 'user', cwd, message: { role: 'user', content: 'Read the brief' } },
+    { type: 'api-request-blob', tools: [{ type: 'advisor_20260301', name: 'advisor', model: 'claude-opus-5-5' }] },
+    { type: 'api-request', params: { model: 'claude-haiku-5-5' } },
+    { type: 'assistant', cwd, message: { model: 'claude-haiku-5-5', content: [] } },
+  ];
+  await fs.writeFile(path.join(stateDir, 'session.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const r = await tab(['--title', 't', '--brief', brief, '--model', 'haiku', '--cwd', cwd]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /on claude-haiku-5-5/);
 });
 
 test('a session on another model closes the window and exits 3', async () => {
@@ -291,4 +309,139 @@ test('--seat launches while another seat holds the package-tab slot', async () =
   const r = await tab(seat());
   assert.equal(r.code, 0, r.err);
   assert.equal(await stateRows(), `${OTHER_WID} ${other.pid} @other-seat omp: other\n`);
+});
+
+// --resume: the transcript is there before the launch, so the proof reads only
+// rows written after it; liveness is the registry's pid plus procStart.
+const SID = '0b5e1c2a-7d4f-4e9a-9c3b-1f2e3d4c5b6a';
+const sessionsDir = () => path.join(stateDir, 'sessions');
+const procStart = async (pid) => {
+  const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
+  return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+};
+// The old transcript, ending on an assistant turn on `model`.
+const oldTranscript = (model = 'claude-opus-5-5') =>
+  fs.mkdir(tdir, { recursive: true }).then(() =>
+    fs.writeFile(
+      path.join(tdir, `${SID}.jsonl`),
+      [
+        { type: 'user', cwd, sessionId: SID, message: { role: 'user', content: 'old' } },
+        { type: 'assistant', cwd, sessionId: SID, message: { model, content: [] } },
+      ].map((r) => JSON.stringify(r)).join('\n') + '\n',
+    ),
+  );
+// A registry row for SID: a live pid (the `other` sleep) with its real or a
+// wrong procStart, optionally holding a bridge id.
+const registryRow = async ({ start, bridge } = {}) => ({
+  pid: other.pid,
+  sessionId: SID,
+  cwd,
+  procStart: start ?? (await procStart(other.pid)),
+  kind: 'interactive',
+  ...(bridge ? { bridgeSessionId: 'session_01Test' } : {}),
+});
+const writeRegistry = async (row) => {
+  await fs.mkdir(sessionsDir(), { recursive: true });
+  await fs.writeFile(path.join(sessionsDir(), `${row.pid}.json`), JSON.stringify(row));
+};
+// What the resumed process writes after the launch: rows appended to the same
+// transcript, and (with `registry`) its own registry record.
+const onLaunch = async ({ model, registry } = {}) => {
+  const lines = ['#!/usr/bin/env bash'];
+  if (model) {
+    const row = JSON.stringify({ type: 'assistant', cwd, sessionId: SID, message: { model, content: [] } });
+    lines.push(`printf '%s\\n' ${JSON.stringify(row)} >> ${JSON.stringify(path.join(tdir, `${SID}.jsonl`))}`);
+  }
+  if (registry) {
+    const f = path.join(sessionsDir(), `${registry.pid}.json`);
+    lines.push(`mkdir -p ${JSON.stringify(sessionsDir())}`, `printf '%s' ${JSON.stringify(JSON.stringify(registry))} > ${JSON.stringify(f)}`);
+  }
+  await fs.writeFile(path.join(stateDir, 'on-launch'), lines.join('\n') + '\n', { mode: 0o755 });
+};
+const resume = (...extra) => ['--resume', SID, '--title', 'claude: resumed', '--model', 'opus', ...extra];
+
+test('--resume of an id with no transcript is refused before launch', async () => {
+  const r = await tab(resume());
+  assert.equal(r.code, 1);
+  assert.match(r.err, /no transcript for session/);
+  assert.equal(await exists('launch-args'), false);
+});
+
+test('--resume refuses an id that is not a session id', async () => {
+  const r = await tab(['--resume', '../x', '--title', 't', '--model', 'opus']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /--resume takes a session id/);
+});
+
+test('--resume refuses a session that is live in another process', async () => {
+  await oldTranscript();
+  await writeRegistry(await registryRow());
+  const r = await tab(resume());
+  assert.equal(r.code, 1);
+  assert.match(r.err, new RegExp(`is live in pid ${other.pid}`));
+  assert.equal(await exists('launch-args'), false);
+});
+
+test('--resume takes the cwd from the transcript and launches claude --resume with the greeting', async () => {
+  await oldTranscript();
+  // A recycled pid: same pid, another start time, so the session is not live.
+  await writeRegistry(await registryRow({ start: '1' }));
+  await onLaunch({ model: 'claude-opus-5-5' });
+  const r = await tab(resume());
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, new RegExp(`^SESSION=${tdir}/${SID}\\.jsonl$`, 'm'));
+  const args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
+  assert.match(args, new RegExp(`^--cwd\n${cwd}$`, 'm'));
+  assert.match(args, new RegExp(`^--resume\n${SID}$`, 'm'));
+  assert.match(args, /resumed by claude-tab.sh --resume/);
+  // A resumed session is a seat: no state row, no slot held.
+  assert.equal(await exists('omp-tab-launched.' + os.userInfo().uid), false);
+});
+
+test('--resume with a --cwd that is not the session\'s is refused', async () => {
+  await oldTranscript();
+  const r = await tab(resume('--cwd', path.dirname(cwd)));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /ran in .* not in/);
+});
+
+test('--resume ignores the rows that were there before the launch', async () => {
+  await oldTranscript();
+  const r = await tab(resume());
+  assert.equal(r.code, 3);
+  assert.match(r.err, /not proven within 90 s .*model=none/);
+});
+
+test('--resume that comes back on another model closes the window and exits 3', async () => {
+  await oldTranscript();
+  await onLaunch({ model: 'claude-sonnet-5-5' });
+  const r = await tab(resume());
+  assert.equal(r.code, 3);
+  assert.match(r.err, /is on model claude-sonnet-5-5 but was launched as opus/);
+  assert.match(await fs.readFile(path.join(stateDir, 'closed'), 'utf8'), new RegExp(`id:${WID}`));
+});
+
+test('--resume --rc is proven by the live registry record holding a bridge id', async () => {
+  await oldTranscript();
+  await onLaunch({ model: 'claude-opus-5-5', registry: await registryRow({ bridge: true }) });
+  const r = await tab(resume('--rc', 'fedora'));
+  assert.equal(r.code, 0, r.err);
+  assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), /^--remote-control\nfedora$/m);
+  assert.match(r.err, /Remote Control "fedora"/);
+});
+
+test('--resume --rc without a bridge id in the registry is not proven', async () => {
+  await oldTranscript();
+  await onLaunch({ model: 'claude-opus-5-5', registry: await registryRow() });
+  const r = await tab(resume('--rc', 'fedora'));
+  assert.equal(r.code, 3);
+  assert.match(r.err, /bridge=0/);
+});
+
+test('--resume with --brief sends the brief instead of the greeting', async () => {
+  await oldTranscript();
+  await onLaunch({ model: 'claude-opus-5-5' });
+  const r = await tab(resume('--brief', brief));
+  assert.equal(r.code, 0, r.err);
+  assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), new RegExp(`^Read ${brief} and carry it out`, 'm'));
 });
