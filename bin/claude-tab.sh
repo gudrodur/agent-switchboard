@@ -9,6 +9,8 @@
 #                 [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
 #   claude-tab.sh --seat --title "claude: <name>" --model ... [--rc [NAME]]
 #                 [--brief /abs/brief.md] [--cwd /abs/repo]
+#   claude-tab.sh --resume <session-id> --title "claude: <name>" --model ...
+#                 [--rc [NAME]] [--brief /abs/brief.md]
 #   claude-tab.sh --list | --close <window-id>       (omp-tab.sh's, on the same state file)
 #   claude-tab.sh --help | -h
 #
@@ -19,6 +21,15 @@
 #                --brief is optional (without one a fixed greeting starts the
 #                session, so the start can still be proven). For a tab that
 #                lives all day, such as the login seat (claude-login-seats.sh).
+#   --resume ID  reopen an existing session (claude --resume ID) as a seat. The
+#                cwd is the session's own, read from its transcript (a --cwd
+#                that differs is refused); a session live in another process
+#                (its registry pid alive with the same procStart) is refused.
+#                Without --brief a fixed greeting says the background work is
+#                gone. Proof: an assistant row on --model written AFTER the
+#                launch and, with --rc, the new process's registry record
+#                holding a bridgeSessionId. claude-resume-set.sh replays a
+#                whole snapshot of sessions through this.
 #
 # --cwd must be a folder Claude Code trusts, itself or through a folder above
 # it; an untrusted one is refused (exit 1). A throwaway folder under /tmp is
@@ -27,7 +38,8 @@
 #
 # Exit codes, the same table as omp-tab.sh:
 #   0  launched AND proven: a new Claude Code session file in --cwd whose first
-#      assistant turn ran on --model (and, with --rc, a bridge-session row)
+#      assistant turn ran on --model (and, with --rc, a bridge-session row);
+#      with --resume, the rows past the pre-launch offset, as above
 #   1  precondition failed (bad args, relative path, missing file, untrusted
 #      folder, slot held)
 #   2  kitty remote control unavailable — CALLER MUST FALL BACK TO HEADLESS AND SAY SO
@@ -38,7 +50,7 @@
 # brief goes in as the initial prompt argument, so no keystrokes are sent. The
 # proof is Claude Code's own transcript: it writes
 # <config>/projects/<encoded cwd>/<session>.jsonl, whose rows carry `cwd`,
-# `"model":"claude-…"` on each assistant message, and a `bridge-session` row
+# `message.model` on each assistant row, and a `bridge-session` row
 # when Remote Control is on. A file that was not there before the launch is
 # the tab's; nothing is read off the screen.
 #
@@ -89,14 +101,15 @@ case "${1:-}" in
   --list|--close) exec "$HERE/omp-tab.sh" "$@" ;;
 esac
 
-TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; SLOT_OVERRIDE=""; RC=0; RC_NAME=""; SEAT=0
+TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; CWD_SET=0; SLOT_OVERRIDE=""; RC=0; RC_NAME=""; SEAT=0; RESUME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --title) TITLE="${2:-}"; shift 2 ;;
     --brief) BRIEF="${2:-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     --model|-m) MODEL="${2:-}"; shift 2 ;;
-    --cwd) CWD="${2:-}"; shift 2 ;;
+    --cwd) CWD="${2:-}"; CWD_SET=1; shift 2 ;;
+    --resume) RESUME="${2:-}"; shift 2 ;;
     --slot-override) SLOT_OVERRIDE="${2:-}"; shift 2 ;;
     --seat) SEAT=1; shift ;;
     --rc)
@@ -112,6 +125,14 @@ case "$MODEL" in
   opus|sonnet|haiku|fable|claude-*) ;;
   *) die "--model takes opus, sonnet, haiku, fable or a full claude-* id, got: $MODEL" ;;
 esac
+if [ -n "$RESUME" ]; then
+  case "$RESUME" in
+    *[!A-Za-z0-9-]*|"") die "--resume takes a session id (letters, digits and '-'), got: $RESUME" ;;
+  esac
+  # A resumed session reopens a tab that was already there: it is a seat, so
+  # it neither checks nor holds the package-tab slot.
+  SEAT=1
+fi
 [ -n "$BRIEF" ] || [ "$SEAT" = 1 ] || die "--brief is required"
 if [ -n "$BRIEF" ]; then
   case "$BRIEF" in /*) ;; *) die "--brief must be absolute (it resolves against the tab's cwd): $BRIEF" ;; esac
@@ -125,6 +146,24 @@ if [ -n "$BRIEF" ]; then
   TRAILERS=$(brief_trailer_lines "$BRIEF")
   [ -z "$TRAILERS" ] || die "brief line(s) $TRAILERS ask for a Co-Authored-By trailer: the commit hooks refuse AI authorship
         trailers, so the tab's commit fails. Say \"Never add a Co-Authored-By line\" instead. Nothing launched."
+fi
+. "$HERE/../lib/claude-session.sh"
+RESUME_FILE=""
+if [ -n "$RESUME" ]; then
+  RESUME_FILE=$(ls -1 "$PROJECTS"/*/"$RESUME.jsonl" 2>/dev/null | head -1)
+  [ -n "$RESUME_FILE" ] || die "no transcript for session $RESUME under $PROJECTS — nothing launched"
+  # The session's own cwd, off its first row that names one; grep, not jq,
+  # because a long session's transcript runs to tens of MB.
+  RCWD=$(grep -m1 -o '"cwd":"[^"]*"' "$RESUME_FILE" | sed 's/^"cwd":"//; s/"$//')
+  [ -n "$RCWD" ] || die "transcript $RESUME_FILE names no cwd — nothing launched"
+  if [ "$CWD_SET" = 1 ] && [ "$(readlink -f "$CWD")" != "$(readlink -f "$RCWD")" ]; then
+    die "session $RESUME ran in $RCWD, not in $CWD — nothing launched"
+  fi
+  CWD=$RCWD
+  # Two processes on one session both append to its transcript.
+  if LIVE=$(claude_live_record_of "$RESUME"); then
+    die "session $RESUME is live in pid $(printf '%s' "$LIVE" | jq -r .pid) — close that one first; nothing launched"
+  fi
 fi
 case "$CWD" in /*) ;; *) die "--cwd must be absolute: $CWD" ;; esac
 [ -d "$CWD" ] || die "--cwd is not a directory: $CWD"
@@ -211,16 +250,23 @@ fi
 # in agent-config).
 TDIR="$PROJECTS/$(readlink -f "$CWD" | sed 's/[^A-Za-z0-9-]/-/g')"
 BEFORE=$(ls -1 "$TDIR" 2>/dev/null | grep '\.jsonl$' | tr '\n' ' ')
+# A resumed session appends to the transcript it already has, so its proof is
+# read only past the byte offset the file had before the launch.
+OFFSET=0
+[ -n "$RESUME_FILE" ] && OFFSET=$(stat -c %s "$RESUME_FILE")
 
 if [ -n "$BRIEF" ]; then
   MSG="Read $BRIEF and carry it out in full. Run the commands rather than reasoning about them. Use absolute paths and 'git -C <dir> ...'."
   [ -n "$OUT" ] && MSG="$MSG Write your findings to $OUT"
+elif [ -n "$RESUME" ]; then
+  MSG="This session was resumed by claude-tab.sh --resume${RC_NAME:+, with Remote Control \"$RC_NAME\"}. Every background command, watcher and wait you had started is gone. Check what is still true before going on, then reply with one line on where you stand."
 else
   MSG="This tab was opened as an overseer seat by claude-tab.sh --seat${RC_NAME:+, with Remote Control \"$RC_NAME\"}. Reply with one line saying you are ready, then wait for instructions."
 fi
 
 ARGS=("$CLAUDE_BIN" --model "$MODEL")
 [ "$RC" = 1 ] && ARGS+=(--remote-control "$RC_NAME")
+[ -n "$RESUME" ] && ARGS+=(--resume "$RESUME")
 ARGS+=("$MSG")
 WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" "${ARGS[@]}" 2>/dev/null)
 case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id, got: '$WID'" ;; esac
@@ -247,7 +293,7 @@ model_ok() {
   esac
 }
 
-SESSION=""; GOT=""; BRIDGE=0
+SESSION="$RESUME_FILE"; GOT=""; BRIDGE=0
 for _ in $(seq 1 45); do
   sleep 2
   if [ -z "$(win_pid "$WID")" ]; then
@@ -262,9 +308,17 @@ for _ in $(seq 1 45); do
     done
   fi
   [ -n "$SESSION" ] || continue
-  # The first real model: Claude Code writes "<synthetic>" for its own notices.
-  [ -n "$GOT" ] || GOT=$(grep -o '"model":"claude-[^"]*"' "$SESSION" 2>/dev/null | head -1 | sed 's/^"model":"//; s/"$//')
-  [ "$RC" = 1 ] && grep -q '"type":"bridge-session"' "$SESSION" 2>/dev/null && BRIDGE=1
+  # The first assistant turn's model (lib/claude-session.sh says why no grep).
+  [ -n "$GOT" ] || GOT=$(tail -c +"$((OFFSET + 1))" "$SESSION" 2>/dev/null | claude_assistant_models | head -1)
+  if [ "$RC" = 1 ] && [ "$BRIDGE" = 0 ]; then
+    if [ -n "$RESUME" ]; then
+      # The transcript's bridge-session row carries no timestamp, so an old one
+      # proves nothing; the live registry record of the new process does.
+      claude_live_record_of "$RESUME" | jq -e '.bridgeSessionId | strings | length > 0' >/dev/null 2>&1 && BRIDGE=1
+    else
+      grep -q '"type":"bridge-session"' "$SESSION" 2>/dev/null && BRIDGE=1
+    fi
+  fi
   [ -n "$GOT" ] && { [ "$RC" = 0 ] || [ "$BRIDGE" = 1 ]; } && break
 done
 

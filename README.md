@@ -18,7 +18,7 @@ A mailbox with acks between agents on three runtimes (Claude Code, omp and Codex
 | Cross-platform channel: the store | One row per message in a SQLite file on disk (`$AGENT_SWITCHBOARD_DIR/state.db`); JSONL files under `mailbox/` only while a legacy pin is set (see Store below). The sender resolves the recipient's window and waits for the ack row. | `bin/agent-send.mjs`, `lib/agent-mailbox.mjs`, `lib/store.mjs` |
 | Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at turn start or while parked in omp, at each prompt in Claude Code and in Codex. | `hooks/omp/pre/mailbox.ts`, `hooks/claude/mailbox-inject.mjs`, `hooks/codex/mailbox.mjs` |
 | Terminal if no ack | Terminal remote control: types the message into the window. Delivery is proven by a new inbound row in that tab's session file. | `bin/kitty-send.sh` |
-| Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. The Claude Code launcher passes the brief as the initial prompt, can turn Remote Control on, and proves the start from the session's own transcript. | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh` |
+| Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. The Claude Code launcher passes the brief as the initial prompt, can turn Remote Control on, and proves the start from the session's own transcript; with `--resume` it reopens an existing session and proves it from the rows written after the launch, and `claude-resume-set.sh` snapshots the live sessions before a reboot and replays them after. | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh`, `bin/claude-resume-set.sh` |
 | Read state | Not the screen but the disk: the window's process, its terminal, the runtime's terminal-sessions link to the session file, and that session file, whose last decisive row is the state. A Claude Code window is read from Claude's own session record (`status` busy or idle) and transcript instead. | `bin/omp-tab-state.sh`, `bin/omp-idle-audit.mjs` |
 | Files | Plain files every agent can read: plan, briefs, steers, reports, logs. | a directory the agents share |
 | Shared record | The `gh` command line: issues, pull requests, checks, merges. | `gh` |
@@ -105,6 +105,11 @@ omp-tab.sh --close <window-id>
 # The same for the opencode TUI and Claude Code: --model is required, and a session on another model closes the tab (exit 3).
 opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
 claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md --model opus|sonnet|haiku|fable|claude-ID [--rc [NAME]] [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
+claude-tab.sh --resume <session-id> --title "claude: <name>" --model ... [--rc [NAME]] [--brief /abs/brief.md]   # reopen a session as a seat, proven past the old rows
+
+# Before a reboot: record the live Claude Code sessions; after it, reopen each one, proven, through claude-tab.sh --resume.
+claude-resume-set.sh --snapshot [/abs/file.json]
+claude-resume-set.sh --replay [/abs/file.json] [--dry-run]
 
 # What a tab is doing, read from disk, never the screen.
 omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]
@@ -139,12 +144,14 @@ Every variable, its default, and what reads it — taken from the code, not from
 | `OPENCODE_TAB_PRESENCE` | unset: `lib/presence.mjs` on the caller's store | `bin/opencode-tab.sh`: a command printing `{"beacons":[...]}` for the start proof, in place of the lib |
 | `CLAUDE_TAB_BIN` | `claude` | `bin/claude-tab.sh`: the command the tab execs |
 | `CLAUDE_TAB_PROJECTS` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects` | `bin/claude-tab.sh`: Claude Code's transcripts, read-only, for the new session file that proves the start, its model and (with `--rc`) its `bridge-session` row |
+| `CLAUDE_RESUME_SET_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/claude-resume-set` | `bin/claude-resume-set.sh`: where `--snapshot` writes `latest.json`, its `.md` and a timestamped copy, and what `--replay` reads by default |
+| `CLAUDE_RESUME_SET_TAB` | `bin/claude-tab.sh` beside it | `bin/claude-resume-set.sh`: the launcher each replayed row runs |
 | `CLAUDE_TAB_CONFIG` | `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json` | `bin/claude-tab.sh`: Claude Code's user config, read-only, for folder trust (the cwd or an ancestor must be trusted, or nothing is launched) |
 | `OMP_MODEL_AUDIT` | `$HOME/.claude/scripts/omp-model-audit.mjs` | `bin/omp-tab.sh`: the config gate run before a model is resolved; skipped when the file is absent |
 | `AGENT_CONFIG_HOME` | `$HOME/agent-config`, else `$HOME/.claude` | `bin/omp-tab.sh`, `bin/opencode-tab.sh`, `bin/claude-tab.sh`: where `scripts/task-claim.mjs` lives |
 | `OMP_TAB_TASK_CLAIM` | `$AGENT_CONFIG_HOME/scripts/task-claim.mjs` | the three launchers: the brief-claim CLI; a missing one is a loud skip |
 | `CLAUDE_SESSION_ID` | unset, then `KITTY_WINDOW_ID` | the three launchers: the launcher id written into each state row |
-| `CLAUDE_SESSIONS_DIR`, `CLAUDE_PROJECTS_DIR` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions`, `.../projects` | `lib/claude-session.sh` (`bin/omp-tab-state.sh`, `bin/kitty-send.sh`): Claude Code's per-pid session records and transcripts, read-only; `KITTY_SEND_CLAUDE_SESSIONS_DIR` and `KITTY_SEND_CLAUDE_PROJECTS_DIR` still win |
+| `CLAUDE_SESSIONS_DIR`, `CLAUDE_PROJECTS_DIR` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions`, `.../projects` | `lib/claude-session.sh` (`bin/omp-tab-state.sh`, `bin/kitty-send.sh`, `bin/claude-tab.sh --resume`, `bin/claude-resume-set.sh`): Claude Code's per-pid session records and transcripts, read-only; `KITTY_SEND_CLAUDE_SESSIONS_DIR` and `KITTY_SEND_CLAUDE_PROJECTS_DIR` still win |
 | `OMP_TAB_STATE_DIR` | `$HOME/.omp/agent/terminal-sessions` | `bin/omp-tab-state.sh`: window-to-session links (omp's own directory — omp writes them, not this repo) |
 | `OMP_TAB_STATE_SESSIONS_DIR` | `$HOME/.omp/agent/sessions` | `bin/omp-tab-state.sh`: canonical sessions dir the link arbitration prefers |
 | `CLAUDE_CODE_SESSION_ID` | null (address by cwd only) | `hooks/claude/mailbox-inject.mjs`, `bin/agent-send.mjs`: host-agent session identity |
