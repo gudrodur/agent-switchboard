@@ -6,15 +6,26 @@
 # Usage:
 #   opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md \
 #                   --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo]
-#                   [--slot-override "<reason>"]
+#                   [--slot-override "<reason>"] [--server URL] [--no-probe]
 #   opencode-tab.sh --list | --close <window-id>     (omp-tab.sh's, on the same state file;
 #                                                     --close also drops that window's beacon)
 #   opencode-tab.sh --help | -h
 #
+# Options beyond the required ones:
+#   --server URL   open the tab on that opencode server (http or https) instead
+#                  of a private one (`--standalone`, the default), so a client
+#                  attached to the shared background service, such as the phone
+#                  app, can see the session. The URL has no default here: say it.
+#   --no-probe     skip the pre-launch probe: one headless `opencode run` on
+#                  --model that must answer, so a provider that returns 402 or
+#                  hangs is refused before a tab opens (OPENCODE_TAB_PROBE_TIMEOUT
+#                  seconds, default 60). It costs a few tokens and a few seconds.
+#
 # Exit codes, the same table as omp-tab.sh:
 #   0  launched AND proven: presence beacon for the window, a new opencode
 #      session in --cwd, and that session's model is --model
-#   1  precondition failed (bad args, relative path, missing file, slot held)
+#   1  precondition failed (bad args, relative path, missing file, slot held,
+#      the model's probe failed or hung)
 #   2  kitty remote control unavailable — CALLER MUST FALL BACK TO HEADLESS AND SAY SO
 #   3  launched but not proven (window id still printed; a wrong model closes it)
 # HELP-END
@@ -36,6 +47,10 @@
 # `--close` refuses a window neither launched; the one-slot gate (#699), since
 # a package tab is a package tab whichever agent runs in it; and the
 # `brief:<basename>` claim in agent-config's task-claim.mjs.
+#
+# The probe runs in a throwaway directory, so the session row it leaves in
+# opencode's store names that directory and can never be taken for the tab's
+# session; it also runs before the launch timestamp is taken.
 #
 # Test seams: OPENCODE_TAB_LAUNCH (the command the tab execs),
 # OPENCODE_TAB_DB (the opencode store), OPENCODE_TAB_PRESENCE (a command that
@@ -69,6 +84,7 @@ presence_json() {
     console.log(JSON.stringify({ beacons: readAllPresence() }));
   ' "$PRESENCE_LIB"
 }
+PROBE_TIMEOUT="${OPENCODE_TAB_PROBE_TIMEOUT:-60}"
 CLAIM_CLI="${OMP_TAB_TASK_CLAIM:-$(config_root)/scripts/task-claim.mjs}"
 claim_cli() {
   [ -r "$CLAIM_CLI" ] || { note "task-claim CLI not found at $CLAIM_CLI — brief claims skipped"; return 0; }
@@ -104,7 +120,7 @@ case "${1:-}" in
     exit 0 ;;
 esac
 
-TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; SLOT_OVERRIDE=""
+TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; SLOT_OVERRIDE=""; SERVER=""; PROBE=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --title) TITLE="${2:-}"; shift 2 ;;
@@ -112,6 +128,8 @@ while [ $# -gt 0 ]; do
     --out) OUT="${2:-}"; shift 2 ;;
     --model|-m) MODEL="${2:-}"; shift 2 ;;
     --cwd) CWD="${2:-}"; shift 2 ;;
+    --server) SERVER="${2:-}"; shift 2 ;;
+    --no-probe) PROBE=0; shift ;;
     --slot-override) SLOT_OVERRIDE="${2:-}"; shift 2 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
@@ -135,6 +153,7 @@ TRAILERS=$(brief_trailer_lines "$BRIEF")
 case "$CWD" in /*) ;; *) die "--cwd must be absolute: $CWD" ;; esac
 [ -d "$CWD" ] || die "--cwd is not a directory: $CWD"
 if [ -n "$OUT" ]; then case "$OUT" in /*) ;; *) die "--out must be absolute: $OUT" ;; esac; fi
+case "$SERVER" in ""|http://?*|https://?*) ;; *) die "--server takes a http(s) URL, got: $SERVER" ;; esac
 [ -x "$LAUNCH" ] || die "launcher not executable: $LAUNCH"
 [ -r "$DB" ] || note "no opencode store at $DB yet — opencode creates it on first start"
 kitty_up || die "kitty remote control unavailable" 2
@@ -194,12 +213,38 @@ fi
 MSG="Read $BRIEF and carry it out in full. Run the commands rather than reasoning about them. Use absolute paths and 'git -C <dir> ...'."
 [ -n "$OUT" ] && MSG="$MSG Write your findings to $OUT"
 
+# The probe: one headless run on the asked model, before any tab opens. A
+# provider with no credit answers 402 on the first turn and the tab would die
+# there. The prompt is a positional argument and stdin is closed, as the
+# headless guard requires. It runs in a throwaway directory (its session row
+# names that directory, not $CWD) and always --standalone: it must not touch
+# the shared service the tab may attach to. Exit 0 with a payment error in the
+# last lines still fails, since a run can report a provider error and exit 0.
+probe_model() {
+  local probe_cwd out rc
+  probe_cwd="$(mktemp -d "${TMPDIR:-/tmp}/opencode-tab-probe-XXXXXX")"
+  out="$(cd "$probe_cwd" && timeout "$PROBE_TIMEOUT" "$LAUNCH" run --standalone -m "$MODEL" \
+           "Reply with exactly the word OK and nothing else." </dev/null 2>&1)"; rc=$?
+  rm -rf "$probe_cwd"
+  if [ "$rc" -eq 124 ]; then
+    die "probe of $MODEL hung for $PROBE_TIMEOUT s; nothing launched. A hang is the environment, not the provider. Re-run; if it repeats, run '$LAUNCH run --standalone -m $MODEL' by hand with stdin closed (< /dev/null)."
+  fi
+  if [ "$rc" -ne 0 ]; then
+    die "probe of $MODEL failed: opencode exited $rc: $(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1); nothing launched. Use --no-probe to skip the probe."
+  fi
+  if printf '%s\n' "$out" | tail -5 | grep -qiE '\b402\b|payment required|insufficient|credit'; then
+    die "probe of $MODEL failed: opencode exited 0 but reported: $(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1); nothing launched. Use --no-probe to skip the probe."
+  fi
+}
+[ "$PROBE" = 1 ] && probe_model
+
+if [ -n "$SERVER" ]; then ATTACH=(--server "$SERVER"); else ATTACH=(--standalone); fi
 START_MS=$(( $(date +%s) * 1000 ))
 WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" \
-        "$LAUNCH" mini --standalone --model "$MODEL" --prompt "$MSG" 2>/dev/null)
+        "$LAUNCH" mini "${ATTACH[@]}" --model "$MODEL" --prompt "$MSG" 2>/dev/null)
 case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id, got: '$WID'" ;; esac
 WPID=$(win_pid "$WID")
-[ -n "$WPID" ] || { printf 'WINDOW_ID=%s\n' "$WID"; die "window $WID exited immediately after launch — run $LAUNCH mini --standalone --model $MODEL by hand" 3; }
+[ -n "$WPID" ] || { printf 'WINDOW_ID=%s\n' "$WID"; die "window $WID exited immediately after launch — run $LAUNCH mini ${ATTACH[*]} --model $MODEL by hand" 3; }
 printf '%s %s @%s %s\n' "$WID" "$WPID" "$LAUNCHER" "$TITLE" >> "$STATE"
 note "launched window $WID (pid $WPID) — $TITLE"
 claim_cli --claim "$CWD" "$BRIEF_REF" --owner "kitty:$WID" --note "$TITLE" >/dev/null 2>&1 || true
@@ -242,7 +287,7 @@ for _ in $(seq 1 45); do
   if [ -z "$(win_pid "$WID")" ]; then
     printf 'WINDOW_ID=%s\n' "$WID"
     sed -i "/^$WID /d" "$STATE" 2>/dev/null || true
-    die "window $WID exited before it was proven started — run $LAUNCH mini --standalone --model $MODEL by hand to see why" 3
+    die "window $WID exited before it was proven started — run $LAUNCH mini ${ATTACH[*]} --model $MODEL by hand to see why" 3
   fi
   if [ "$beacon" = 0 ] && presence_json 2>/dev/null | jq -e --argjson w "$WID" '.beacons[] | select(.windowId == $w)' >/dev/null 2>&1; then
     beacon=1

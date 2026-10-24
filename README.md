@@ -103,7 +103,7 @@ omp-tab.sh --list
 omp-tab.sh --close <window-id>
 
 # The same for the opencode TUI and Claude Code: --model is required, and a session on another model closes the tab (exit 3).
-opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
+opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"] [--server URL] [--no-probe]   # probes the model first; --server opens the tab on a shared opencode server
 claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md --model opus|sonnet|haiku|fable|claude-ID [--rc [NAME]] [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
 claude-tab.sh --resume <session-id> --title "claude: <name>" --model ... [--rc [NAME]] [--brief /abs/brief.md]   # reopen a session as a seat, proven past the old rows
 
@@ -140,6 +140,7 @@ Every variable, its default, and what reads it — taken from the code, not from
 | `OMP_TAB_CONFIG` | `$HOME/.omp/agent/config.yml` | `bin/omp-tab.sh`: account default model when `--model` is absent |
 | `OMP_TAB_LEAN_YML` | `<checkout>/config/omp-tab-lean.yml` | `bin/omp-tab.sh`: the lean MCP overlay a default launch carries (uncomment its skills example for user skills) |
 | `OPENCODE_TAB_LAUNCH` | `<agent-config>/scripts/opencode-launch.sh` | `bin/opencode-tab.sh`: the command the tab execs (exports the Cloudflare MCP tokens, then runs opencode) |
+| `OPENCODE_TAB_PROBE_TIMEOUT` | `60` | `bin/opencode-tab.sh`: seconds the pre-launch model probe may take before it counts as a hang |
 | `OPENCODE_TAB_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db` | `bin/opencode-tab.sh`: opencode's store, read-only, for the session row that proves the start and its model |
 | `OPENCODE_TAB_PRESENCE` | unset: `lib/presence.mjs` on the caller's store | `bin/opencode-tab.sh`: a command printing `{"beacons":[...]}` for the start proof, in place of the lib |
 | `CLAUDE_TAB_BIN` | `claude` | `bin/claude-tab.sh`: the command the tab execs |
