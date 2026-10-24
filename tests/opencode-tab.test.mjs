@@ -34,7 +34,32 @@ before(async () => {
   await fs.writeFile(brief, '# Brief\n');
   db = path.join(stateDir, 'opencode.db');
   launcher = path.join(stateDir, 'opencode-launch.sh');
-  await fs.writeFile(launcher, '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  // The launcher stub. `run` is the pre-launch probe: it answers OK unless the
+  // model is listed in $state/probe-fail (rc 1, a 402 line, as a drained
+  // provider does) or $state/probe-hang (sleeps past the probe timeout via
+  // /bin/sleep, bypassing the no-op sleep stub), and records its arguments and
+  // cwd. `output-402` makes it print the 402 line yet exit 0. Anything else
+  // is the tab's own command and exits 0.
+  await fs.writeFile(
+    launcher,
+    [
+      '#!/usr/bin/env bash',
+      `state=${JSON.stringify(stateDir)}`,
+      'if [ "$1" = run ]; then',
+      '  printf \'%s | cwd=%s\\n\' "$*" "$PWD" >> "$state/probe-calls"',
+      '  m=""; while [ $# -gt 0 ]; do case "$1" in -m|--model) m="$2"; shift 2 ;; *) shift ;; esac; done',
+      '  if [ -f "$state/probe-fail" ] && grep -qxF -- "$m" "$state/probe-fail"; then',
+      '    printf \'%s\\n\' "402 Payment Required" >&2; exit 1',
+      '  fi',
+      '  if [ -f "$state/probe-hang" ] && grep -qxF -- "$m" "$state/probe-hang"; then exec /bin/sleep 30; fi',
+      '  if [ -f "$state/probe-402-rc0" ]; then printf \'%s\\n\' "Error: 402 insufficient credit"; exit 0; fi',
+      '  printf \'OK\\n\'; exit 0',
+      'fi',
+      'exit 0',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
   const lsJson = `[{"tabs":[{"windows":[{"id":${WID},"pid":${process.pid}}]}]}]`;
   await fs.writeFile(
     path.join(binDir, 'kitty'),
@@ -67,7 +92,7 @@ after(async () => {
 // Fresh store and state for each test; `session` rows are what opencode
 // writes when the TUI starts in a directory.
 beforeEach(async () => {
-  for (const f of ['launch-args', 'closed', 'nokitty', 'gone', 'presence.json', 'omp-tab-launched.' + os.userInfo().uid]) {
+  for (const f of ['launch-args', 'probe-calls', 'probe-fail', 'probe-hang', 'probe-402-rc0', 'closed', 'nokitty', 'gone', 'presence.json', 'omp-tab-launched.' + os.userInfo().uid]) {
     await fs.rm(path.join(stateDir, f), { force: true });
   }
   await fs.rm(db, { force: true });
@@ -85,7 +110,7 @@ const addSession = (id, model, { dir = cwd, parent = null, at = Date.now() + 60_
 const beacon = (windowId) =>
   fs.writeFile(path.join(stateDir, 'presence.json'), JSON.stringify({ beacons: [{ sessionId: 'x', windowId }] }));
 
-const tab = async (args) => {
+const tab = async (args, extraEnv = {}) => {
   try {
     const r = await run('bash', [SCRIPT, ...args], {
       env: isolatedEnv({
@@ -96,6 +121,7 @@ const tab = async (args) => {
         OPENCODE_TAB_DB: db,
         OPENCODE_TAB_PRESENCE: path.join(binDir, 'presence'),
         OMP_TAB_TASK_CLAIM: path.join(stateDir, 'no-claim-cli.mjs'),
+        ...extraEnv,
       }),
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -204,6 +230,74 @@ test('a session older than the launch is not taken as proof', async () => {
   const r = await tab(full());
   assert.equal(r.code, 3);
   assert.match(r.err, /session=none/);
+});
+
+test('a model whose provider answers 402 is refused before any tab opens', async () => {
+  await beacon(WID);
+  addSession('ses_new', MODEL);
+  await fs.writeFile(path.join(stateDir, 'probe-fail'), `${MODEL}\n`);
+  const r = await tab(full());
+  assert.equal(r.code, 1);
+  assert.match(r.err, /probe of .* failed: opencode exited 1: 402 Payment Required/);
+  assert.equal(await exists('launch-args'), false);
+});
+
+test('a 402 line in the probe output fails the probe even at exit 0', async () => {
+  await fs.writeFile(path.join(stateDir, 'probe-402-rc0'), '');
+  const r = await tab(full());
+  assert.equal(r.code, 1);
+  assert.match(r.err, /402/);
+  assert.equal(await exists('launch-args'), false);
+});
+
+test('a hung probe exits 1 with a hang message and launches nothing', async () => {
+  await fs.writeFile(path.join(stateDir, 'probe-hang'), `${MODEL}\n`);
+  const r = await tab(full(), { OPENCODE_TAB_PROBE_TIMEOUT: '1' });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /probe of .* hung for 1 s/);
+  assert.equal(await exists('launch-args'), false);
+});
+
+test('an answering probe lets the launch proceed; it runs the asked model in a throwaway cwd', async () => {
+  await beacon(WID);
+  addSession('ses_new', MODEL);
+  const r = await tab(full());
+  assert.equal(r.code, 0, r.err);
+  const calls = await fs.readFile(path.join(stateDir, 'probe-calls'), 'utf8');
+  assert.match(calls, /^run --standalone -m opencode\/muse-spark-1\.3-contributor-free /);
+  assert.doesNotMatch(calls, new RegExp(`cwd=${cwd}$`, 'm'));
+  assert.equal(await exists('launch-args'), true);
+});
+
+test('--no-probe skips the probe', async () => {
+  await beacon(WID);
+  addSession('ses_new', MODEL);
+  await fs.writeFile(path.join(stateDir, 'probe-fail'), `${MODEL}\n`);
+  const r = await tab([...full(), '--no-probe']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(await exists('probe-calls'), false);
+  assert.equal(await exists('launch-args'), true);
+});
+
+test('--server URL launches on that server and not --standalone; the default launch stays --standalone', async () => {
+  await beacon(WID);
+  addSession('ses_new', MODEL);
+  const r = await tab([...full(), '--server', 'http://127.0.0.1:49374']);
+  assert.equal(r.code, 0, r.err);
+  const args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
+  assert.match(args, /^mini\n--server\nhttp:\/\/127\.0\.0\.1:49374\n--model\n/m);
+  assert.doesNotMatch(args, /--standalone/);
+  await fs.rm(path.join(stateDir, 'launch-args'));
+  const r2 = await tab(full());
+  assert.equal(r2.code, 0, r2.err);
+  assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), /^--standalone$/m);
+});
+
+test('--server takes a http(s) URL: a bare word is refused', async () => {
+  const r = await tab([...full(), '--server', 'shared']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /--server takes a http\(s\) URL/);
+  assert.equal(await exists('launch-args'), false);
 });
 
 test('--close closes a launched window and drops the beacons naming it', async () => {
