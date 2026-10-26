@@ -105,12 +105,23 @@ const usage = () => `Usage:
                 state dir and sent as --file. For anything longer, leave the
                 file in place until the recipient confirms it has the message.
 
-  Exit: 0 acked, or delivered and proven by kitty-send; 3 not delivered yet and
-  do not resend: the row is queued in the mailbox for the consumer, or kitty-send
-  sent it and could not prove it; 10 typed but not proven submitted
-  (kitty-send reached the window but no session row proves submission — look
-  at the window before resending, never resend blind); any other code is
-  kitty-send.sh's own.
+  Exit: the code is the delivery verdict.
+    0   delivered: acked in the mailbox, or kitty-send proved the text landed
+    3   pending, do not resend: queued in the mailbox for the consumer,
+        re-queued after kitty-send sent nothing, a kitty --queue waiter
+        started (its verdict lands in the queue log), or kitty-send sent it
+        and could not prove it
+    8   pending in the target's steering queue until the tool boundary, not
+        lost; do not resend
+    10  typed but not proven submitted (kitty-send reached the window, no
+        session row proves submission): look at the window, never resend blind
+    1 4 5 6 7 9   failed, nothing sent and nothing queued (reached only when
+        there is no mailbox to fall back to; a withdrawn row is re-queued and
+        exits 3 instead): 1 usage or precondition, 4 selection dialog open,
+        5 idle wait ran out, 6 a send is already queued, 7 mid-turn without
+        --now/--queue/--wait-idle, 9 composer holds unsubmitted text
+    any other code is unexpected: treat the message as not delivered, and look
+    at the tab before resending
 `;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -318,7 +329,11 @@ const main = (argv) => {
   // into a window, so send_message keeps those as errors.
   const senderSessionId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
   // One kitty-send run; returns its exit status (null when a signal killed it).
-  const runKittySend = (why, target, sendText, noteId = null) => {
+  // requeue: the caller re-queues the row when kitty-send sent nothing, so this
+  // function prints no verdict of its own for those codes (one line, not two).
+  // It also runs kitty-send synchronously: --queue starts a detached waiter and
+  // returns 0, hiding the real status from the re-queue guard.
+  const runKittySend = (why, target, sendText, noteId = null, { requeue = false } = {}) => {
     process.stderr.write(`agent-send: ${why}, falling back to kitty-send\n`);
     const args = ['--to', String(target)];
     if (file != null) args.push('--file', file);
@@ -328,7 +343,13 @@ const main = (argv) => {
       args.push('--file', note);
     } else args.push('--text', sendText);
     if (priority === 'idle') args.push('--idle-when', idleWhen);
-    if (priority === 'queue') args.push('--queue');
+    if (priority === 'queue') {
+      // The withdraw path runs under --queue only after --deadline bounded the
+      // ack wait (without it the wait is unbounded and never falls through),
+      // so the 120 s is a guard for a future caller, not a reachable default.
+      if (requeue) args.push('--wait-idle', deadline != null ? String(deadline) : '120');
+      else args.push('--queue');
+    }
     // A bare --text is priority now but forwards nothing: kitty-send.sh keeps
     // its own mid-turn default (exit 7). Only an explicit --now/--stop sends
     // mid-turn, --stop becoming --now (the one kitty flag that does).
@@ -336,7 +357,7 @@ const main = (argv) => {
     // (exit 1, "mutually exclusive"), and here --deadline bounded agent-send's
     // own ack wait, not a kitty-send idle wait.
     if (mode === 'now' || mode === 'stop') args.push('--now');
-    else if (deadline != null) args.push('--deadline', deadline);
+    else if (deadline != null && !(requeue && priority === 'queue')) args.push('--deadline', deadline);
     const r = spawnSync(kittySend(), args, { stdio: 'inherit' });
     // kitty-send exit 10: typed but not proven submitted — reached the
     // window, but no session row proves the target submitted it. Passes
@@ -353,15 +374,15 @@ const main = (argv) => {
     }
     // A fallback that sent NOTHING must say so with the reason and where the
     // verdict lives: without this an exit 9 reads like delivery.
-    if (KITTY_SENT_NOTHING.has(r.status)) {
+    if (KITTY_SENT_NOTHING.has(r.status) && !requeue) {
       const qlog = kittyQueueLog(target);
       process.stderr.write(
-        `agent-send: kitty-send exit ${r.status} for ${args[1]}: nothing was sent (${KITTY_NOTHING_REASON[r.status] ?? 'see kitty-send.sh'})` +
-        `${qlog ? `; kitty queue log: ${qlog}` : ''}; do not resend blind — check the tab first\n`,
+        `agent-send: kitty-send exit ${r.status} for ${args[1]}: nothing was sent (${KITTY_NOTHING_REASON[r.status] ?? 'see kitty-send.sh'}) and nothing is queued: this is a failure, the message did not go; check the tab, then send again` +
+        `${qlog ? `; kitty queue log: ${qlog}` : ''}\n`,
       );
     } else if (r.status === 0 && args.includes('--queue') && kittyQueueLog(target)) {
       // Queued, not delivered: the verdict arrives later and asynchronously,
-      process.stderr.write(`agent-send: kitty-send queued for ${args[1]}; delivery is pending — confirm it in ${kittyQueueLog(target)} (a later exit 9 there means nothing was sent)\n`);
+      process.stderr.write(`agent-send: kitty-send queued for ${args[1]}; delivery is pending — confirm it in ${kittyQueueLog(target)} (a later exit 9 there means nothing was sent); exit 3: pending, do not resend\n`);
     }
     return r.status;
   };
@@ -371,7 +392,11 @@ const main = (argv) => {
   const kittyFallback = (why) => {
     const t = recipient?.role != null ? recipient.beaconWindowId : to;
     if (t == null) die(`${why}, and role ${recipient.role} has no kitty window to fall back to`);
-    process.exit(runKittySend(why, t, text) ?? 1);
+    const st = runKittySend(why, t, text);
+    // A --queue waiter that was only started is not a delivery: the verdict
+    // lands later in the queue log (exit 3: pending, do not resend).
+    if (st === 0 && priority === 'queue') process.exit(3);
+    process.exit(st ?? 1);
   };
   try {
     recipient = resolveRecipient(to, { senderSessionId, senderCwd: process.cwd(), senderWindowId: senderWindowId() });
@@ -457,13 +482,14 @@ const main = (argv) => {
     target,
     `${text} (If this same steer reaches you twice, act on it once: the mailbox copy was withdrawn.)`,
     row.id,
+    { requeue: true },
   );
   // On these codes kitty-send sent NOTHING (usage or no window, a dialog, the
   // idle wait ran out, a send already queued, mid-turn without --now). The row
   // is withdrawn, so without this the message is gone: put it back.
   if (KITTY_SENT_NOTHING.has(status)) {
     const again = appendMessage({ to: recipient.key, from, priority, text });
-    process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing for ${row.id}; re-queued as ${again.id} in ${mbox} for the consumer's next tool boundary (exit 3: not delivered yet, do not resend)\n`);
+    process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing (${KITTY_NOTHING_REASON[status] ?? 'see kitty-send.sh'}) for ${row.id}; re-queued as ${again.id} in ${mbox} for the consumer's next tool boundary (exit 3: not delivered yet, do not resend)\n`);
     process.exit(3);
   }
   if (status == null) {

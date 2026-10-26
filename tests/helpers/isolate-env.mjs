@@ -16,7 +16,11 @@ const ISOLATED_PREFIXES = ['AGENT_SWITCHBOARD_', 'AGENT_MAILBOX_'];
 // A suite run inside an omp tab inherits both, so a session-less test would
 // silently become a with-id test there. A test that needs either sets it
 // itself, after this scrub (an explicit isolatedEnv() extra wins).
-const ISOLATED_KEYS = new Set(['OMP_SESSION_ID', 'KITTY_WINDOW_ID']);
+// AGENT_SEAT_ROLE too: a seat started with `claude-tab.sh --role` carries it,
+// and claimRoleFromEnv/claimNudge read it as their default, so a suite run
+// from such a seat claims a role where a test expects the claim nudge (two
+// failures measured 2026-10-26 from window 258, agent-config#1310).
+const ISOLATED_KEYS = new Set(['OMP_SESSION_ID', 'KITTY_WINDOW_ID', 'AGENT_SEAT_ROLE']);
 
 export const isIsolatedKey = (key) => ISOLATED_KEYS.has(key) || ISOLATED_PREFIXES.some((p) => key.startsWith(p));
 

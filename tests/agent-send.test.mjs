@@ -339,7 +339,7 @@ test('a fallback that sends nothing puts the message back in the mailbox ', asyn
     childEnv({ CLAUDE_CODE_SESSION_ID: 's2', AGENT_SEND_KITTY_SEND: realRulesStub, KITTY_SEND_STUB_EXIT: '7' }),
   );
   assert.equal(code, 3);
-  assert.match(stderr, /kitty-send exit 7 sent nothing for \S+; re-queued as \S+/);
+  assert.match(stderr, /kitty-send exit 7 sent nothing \(mid-turn without --now\/--queue\/--wait-idle\) for \S+; re-queued as \S+/);
   const left = readUnacked(KEY_S1, { dir: mboxDir });
   assert.equal(left.length, 1);
   assert.equal(left[0].text, 'bare steer');
@@ -355,10 +355,34 @@ test('a fallback refused at a dirty composer (exit 9) puts the message back in t
     childEnv({ CLAUDE_CODE_SESSION_ID: 's2', AGENT_SEND_KITTY_SEND: realRulesStub, KITTY_SEND_STUB_EXIT: '9' }),
   );
   assert.equal(code, 3);
-  assert.match(stderr, /kitty-send exit 9 sent nothing for \S+; re-queued as \S+/);
+  assert.match(stderr, /kitty-send exit 9 sent nothing \(composer holds unsubmitted text\) for \S+; re-queued as \S+/);
   const left = readUnacked(KEY_S1, { dir: mboxDir });
   assert.equal(left.length, 1);
   assert.equal(left[0].text, 'dirty composer steer');
+});
+
+// agent-config#1310: the exit code is the delivery verdict. On the withdraw
+// path kitty-send must run SYNCHRONOUSLY (--wait-idle, never --queue, whose
+// detached waiter returns 0 at once), so a wait that runs out (exit 5) is seen
+// and the row is re-queued instead of lost behind an exit 0.
+test('withdraw path under --queue --deadline forwards --wait-idle, re-queues on exit 5, prints one verdict', async () => {
+  fs.rmSync(fallbackArgv, { force: true });
+  fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
+  const { code, stderr } = await runSend(
+    ['--to', '991001', '--queue', '--deadline', '1', '--text', 'queued steer'],
+    childEnv({ CLAUDE_CODE_SESSION_ID: 's2', AGENT_SEND_KITTY_SEND: realRulesStub, KITTY_SEND_STUB_EXIT: '5' }),
+  );
+  const argv = fs.readFileSync(fallbackArgv, 'utf-8').split('\n').filter(Boolean);
+  assert.ok(!argv.includes('--queue'), `--queue must not be forwarded: ${argv}`);
+  assert.equal(argv[argv.indexOf('--wait-idle') + 1], '1', `argv: ${argv}`);
+  assert.ok(!argv.includes('--deadline'));
+  assert.equal(code, 3, stderr);
+  const left = readUnacked(KEY_S1, { dir: mboxDir });
+  assert.equal(left.length, 1, 're-queued row exists');
+  assert.equal(left[0].text, 'queued steer');
+  assert.match(stderr, /kitty-send exit 5 sent nothing \(idle wait ran out\) for \S+; re-queued as \S+/);
+  assert.doesNotMatch(stderr, /check the tab first/);
+  assert.doesNotMatch(stderr, /nothing was sent/);
 });
 
 test('a fallback that sent but could not prove it (exit 3) is not re-queued', async () => {
@@ -925,7 +949,7 @@ test('a no-consumer fallback refused at a dirty composer (exit 9) names the queu
   assert.match(stderr, new RegExp(`kitty queue log: ${queueDir}/kitty-send/queue-991002\\.log`));
 });
 
-test('a queued kitty fallback (exit 0 under --queue) names the queue log to confirm', async () => {
+test('a queued kitty fallback (exit 0 under --queue) is pending: exit 3, names the queue log', async () => {
   const queueDir = path.join(binDir, 'xdg-run');
   fs.mkdirSync(queueDir, { recursive: true });
   const queueStub = path.join(binDir, 'kitty-send-queued-stub.sh');
@@ -934,8 +958,10 @@ test('a queued kitty fallback (exit 0 under --queue) names the queue log to conf
     ['--to', '991002', '--text', 'queued steer', '--queue'],
     { ...childEnv(), AGENT_SEND_KITTY_SEND: queueStub, XDG_RUNTIME_DIR: queueDir },
   );
-  assert.equal(code, 0);
+  // A started waiter is not a delivery (agent-config#1310): exit 3, not 0.
+  assert.equal(code, 3, stderr);
   assert.match(stderr, new RegExp(`kitty-send queued for 991002; .*confirm it in ${queueDir}/kitty-send/queue-991002\\.log`));
+  assert.match(stderr, /do not resend/);
 });
 
 // A supervisor idle ~30 min ages past the 20-min presence window, so its

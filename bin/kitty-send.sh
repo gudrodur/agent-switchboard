@@ -44,6 +44,10 @@
 #   9  the target's composer already holds an unsubmitted paste chip that is
 #      NOT kitty-send's own leftover — NOTHING WAS SENT (it may be a human's
 #      draft; the message prints the recovery command)
+#   Under --queue, exit 0 means only that the background waiter STARTED: the
+#   delivery verdict (any code above) lands later in the queue log. A caller
+#   that needs the verdict must use --wait-idle N, which runs in the
+#   foreground (agent-send does, on its withdraw path; agent-config#1310).
 #   10 typed, not proven submitted: the window has no session file to read,
 #      so the only proof is the screen. The text reached the window (it
 #      echoed, or the screen changed on it) but nothing proves the target
@@ -232,6 +236,8 @@ Options:
               23 minutes and one steer was never delivered, because the
               only other choice was a blind send that discards the target's
               in-flight tool result.
+              Exit 0 means the waiter started, not that the text landed;
+              for the verdict in the exit code use --wait-idle N instead.
   --now       send even if the target is mid-turn, accepting that the tool
               call in flight has its result discarded. Without it, and
               without --wait-idle or --queue, a busy target is exit 7 and
