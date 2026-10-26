@@ -90,9 +90,11 @@ omp runs hooks on Bun. Bun 1.3.14 loads the symlinked hook, including its `.ts` 
 ```sh
 # Steer another agent; exit 0 means acked or proven, 3 means not delivered yet (do not resend),
 # 10 means typed but not proven (look at the window before resending); any other code is kitty-send.sh's.
-agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text "one line" | --file /abs/path) [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
+agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text TEXT | --file /abs/path) [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
 agent-send.mjs --read [--as <session-id>]   # print and ack this session's inbox rows
 agent-send.mjs --cancel --to <key> --id <r> # withdraw one queued row
+# A multi-line --text reaches a mailbox consumer whole; on the kitty fallback it becomes a --file note
+# under ~/.local/state/agent-switchboard/notes/. The process title hides the text from `pkill -f`.
 
 # Open a titled tab with its brief and confirm it started (exit 2 means no terminal remote control).
 omp-tab.sh --title "omp: <what this review is>" --brief /abs/brief.md [--out /abs/out.md] [--overwrite] [--cwd /abs/repo]
