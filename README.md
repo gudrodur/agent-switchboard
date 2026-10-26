@@ -85,14 +85,27 @@ In store mode the directory watch has no key files to see, so the idle path is t
 
 omp runs hooks on Bun. Bun 1.3.14 loads the symlinked hook, including its `.ts` import, with no build step (checked 2026-09-13), and node >= 24 loads the same file in `npm test`. A runtime that preserved symlinks instead of resolving them would break the relative imports; then point the hook list at `<checkout>/hooks/omp/pre/mailbox.ts` directly.
 
+### Seat roles
+
+A window id dies with its window: when a seat is replaced by a new session in a new window, mail addressed to the old id fails. A **seat role** is a name for the seat itself. `--to role:<name>` follows whichever session holds the role (`[a-z0-9][a-z0-9-]{0,63}`).
+
+- **Claim:** `agent-send.mjs --claim-role lead` makes the current session the holder; a later claim takes the role over. Launch a tab with `--role lead` (`claude-tab.sh`, `omp-tab.sh`) and the session claims the role on its first prompt through `AGENT_SEAT_ROLE`, but only when the role is free or its holder is no longer live, so a replaced seat cannot take the role back from its successor.
+- **Send:** a live holder receives the message exactly as if you had addressed its session. With no live holder the message is queued under the mailbox key `role:<name>` (exit 3, "queued for role X; no live holder"), and the next session that claims the role receives it on its next prompt.
+- **Inspect:** `agent-send.mjs --who` lists live seats; `--json` prints the same for machines. A `--to <window>` that matches no window lists the live seats in your repo and every role holder.
+
+Roles live in the `seat_roles` table of the SQLite store (`AGENT_SWITCHBOARD_DB` or the default state db), also when the mailbox itself is still on the legacy file backend.
+
 ### Sending and launching
 
 ```sh
 # Steer another agent; exit 0 means acked or proven, 3 means not delivered yet (do not resend),
 # 10 means typed but not proven (look at the window before resending); any other code is kitty-send.sh's.
-agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text TEXT | --file /abs/path) [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
+agent-send.mjs --to <window-id|title-substring|mailbox-key|role:name> (--text TEXT | --file /abs/path) [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
 agent-send.mjs --read [--as <session-id>]   # print and ack this session's inbox rows
 agent-send.mjs --cancel --to <key> --id <r> # withdraw one queued row
+agent-send.mjs --to role:<name> --text TEXT # address a seat role; it survives a seat change
+agent-send.mjs --claim-role <name>          # make this session the holder of a role
+agent-send.mjs --who [--json]               # live seats: window, session, cwd, repo, branch, roles, title
 # A multi-line --text reaches a mailbox consumer whole; on the kitty fallback it becomes a --file note
 # under ~/.local/state/agent-switchboard/notes/. The process title hides the text from `pkill -f`.
 
