@@ -64,7 +64,12 @@ import {
   recordPresence,
   releasePresence,
 } from "../../../lib/presence.mjs";
-import { readPresenceBeacons } from "../../../lib/agent-mailbox.mjs";
+import {
+  readPresenceBeacons,
+  readUnackedByRoles,
+  rolesHeldBy,
+  claimRoleFromEnv,
+} from "../../../lib/agent-mailbox.mjs";
 import { kittyWindowId } from "../lib/window-id.ts";
 // Explicit `.ts` specifier (the source used the compiled `.js` extension):
 // node >= 24 type-stripping resolves this with no build step, which is what
@@ -175,9 +180,13 @@ export const releaseAtShutdown = ({ cwd, sessionId = null, presenceFile = undefi
 // own key. With a null session id there is no suffix to scan for, so keep
 // today's behaviour and drain the current key only.
 export const drainInbox = ({ cwd, sessionId = null, dir } = {}) => {
+  // AGENT_SEAT_ROLE claims on the first drain (only a free role, or one whose
+  // holder is not live), then every drain also takes the queue of each role
+  // this session holds.
+  if (sessionId != null) claimRoleFromEnv({ sessionId, cwd, windowId: kittyWindowId() });
   const pairs =
     sessionId != null
-      ? readUnackedBySession(sessionId, { dir })
+      ? [...readUnackedBySession(sessionId, { dir }), ...readUnackedByRoles(rolesHeldBy(sessionId), { dir })]
       : (() => {
           const key = recipientKey({ cwd, sessionId });
           return readUnacked(key, { dir }).map((row) => ({ key, row }));
