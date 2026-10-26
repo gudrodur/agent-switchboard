@@ -225,6 +225,30 @@ test('the claude hook nudges a role-less seat once, on its first prompt only', (
   assert.doesNotMatch(prompt('nudge-1'), /holds no role/);
 });
 
+test('the nudge still fires when another hook recorded presence first (parallel hooks)', () => {
+  // A host's own presence hook runs beside mailbox-inject in the same prompt
+  // and may write this session's beacon before it: that must not read as
+  // "not the first prompt".
+  beacon('nudge-race', '/repo/proj');
+  assert.match(prompt('nudge-race'), /holds no role/);
+  assert.doesNotMatch(prompt('nudge-race'), /holds no role/);
+});
+
+test('retention drops seat_nudges rows after 14 days', async () => {
+  const { markNudged } = await roles();
+  const { pruneRetention, RETENTION_MS } = await import('../lib/store.mjs');
+  const now = Date.now();
+  await withDb((db) => {
+    assert.equal(markNudged(db, 'old-nudge', now - RETENTION_MS - 1000), true);
+    assert.equal(markNudged(db, 'old-nudge', now), false);
+    assert.equal(markNudged(db, 'new-nudge', now), true);
+    pruneRetention(db, { now });
+    const left = db.all('SELECT session_id FROM seat_nudges').map((r) => r.session_id);
+    assert.ok(!left.includes('old-nudge'));
+    assert.ok(left.includes('new-nudge'));
+  });
+});
+
 test('no nudge for a seat that holds a role or launched with AGENT_SEAT_ROLE', async () => {
   const { claimRole } = await roles();
   await withDb((db) => claimRole(db, { role: 'nudge-held', sessionId: 'nudge-2', cwd: '/repo/proj' }));
