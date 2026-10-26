@@ -171,3 +171,78 @@ test('a replaced seat does not take its role back from a live successor', async 
   assert.equal(claimRoleFromEnv({ sessionId: 'succ-old', role: 'relay' }), null);
   await withDb((db) => assert.equal(roleHolder(db, 'relay').session_id, 'succ-new'));
 });
+
+// ---- --who normalisation and the claim nudge ----
+
+const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf-8' });
+const mkRepo = (name) => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, `${name}-`)));
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'commit', '-q', '--allow-empty', '-m', 'init');
+  return dir;
+};
+
+test('--who collapses a subdirectory beacon into its checkout root, one row per seat', () => {
+  const repo = mkRepo('who-sub');
+  fs.mkdirSync(path.join(repo, 'pkg', 'deep'), { recursive: true });
+  beacon('sub-sess-1', repo, { windowId: 109, branch: 'main', repo: 'who-sub' });
+  beacon('sub-sess-1', path.join(repo, 'pkg', 'deep'), { branch: 'main', repo: 'who-sub' });
+  const rows = JSON.parse(send(['--who', '--json']).stdout).filter((s) => s.sessionId === 'sub-sess-1');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].cwd, repo);
+  assert.equal(rows[0].windowId, 109);
+  const table = send(['--who']).stdout.split('\n').filter((l) => l.includes('sub-sess'));
+  assert.equal(table.length, 1);
+});
+
+test('--who shows a detached HEAD as HEAD@<short sha>', () => {
+  const repo = mkRepo('who-det');
+  git(repo, 'checkout', '-q', '--detach');
+  const sha = git(repo, 'rev-parse', '--short', 'HEAD').stdout.trim();
+  beacon('det-sess-1', repo, { branch: 'HEAD', repo: 'who-det' });
+  const rows = JSON.parse(send(['--who', '--json']).stdout).filter((s) => s.sessionId === 'det-sess-1');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].branch, `HEAD@${sha}`);
+  assert.match(send(['--who']).stdout, new RegExp(`HEAD@${sha}`));
+});
+
+const prompt = (sessionId, extra = {}) => {
+  const r = spawnSync('node', [INJECT], {
+    encoding: 'utf-8',
+    input: JSON.stringify({ session_id: sessionId, cwd: '/repo/proj' }),
+    env: childEnv(extra),
+    timeout: 30_000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout;
+};
+
+test('the claude hook nudges a role-less seat once, on its first prompt only', () => {
+  const first = prompt('nudge-1');
+  assert.match(first, /holds no role/);
+  assert.match(first, /agent-send\.mjs --claim-role proj-<purpose>|agent-send\.mjs --claim-role [a-z0-9-]+-<purpose>/);
+  assert.match(first, /lost when the window closes/);
+  assert.doesNotMatch(prompt('nudge-1'), /holds no role/);
+});
+
+test('no nudge for a seat that holds a role or launched with AGENT_SEAT_ROLE', async () => {
+  const { claimRole } = await roles();
+  await withDb((db) => claimRole(db, { role: 'nudge-held', sessionId: 'nudge-2', cwd: '/repo/proj' }));
+  assert.doesNotMatch(prompt('nudge-2'), /holds no role/);
+  assert.doesNotMatch(prompt('nudge-3', { AGENT_SEAT_ROLE: 'nudge-env' }), /holds no role/);
+});
+
+test('the omp hook nudges once per session, and not a role holder', async () => {
+  const { default: hook } = await import('../hooks/omp/pre/mailbox.ts');
+  const handlers = {};
+  const sent = [];
+  hook({ on: (ev, fn) => { handlers[ev] = fn; }, sendMessage: (m) => sent.push(m.content) });
+  const ctx = (sid) => ({ cwd: '/repo/proj', sessionManager: { getSessionFile: () => `/x/${sid}.jsonl` }, isIdle: () => false });
+  await handlers.turn_start({}, ctx('omp-nudge-1'));
+  await handlers.turn_start({}, ctx('omp-nudge-1'));
+  assert.equal(sent.filter((c) => /holds no role/.test(c)).length, 1);
+  const { claimRole } = await roles();
+  await withDb((db) => claimRole(db, { role: 'omp-held', sessionId: 'omp-nudge-2', cwd: '/repo/proj' }));
+  await handlers.turn_start({}, ctx('omp-nudge-2'));
+  assert.equal(sent.filter((c) => /holds no role/.test(c)).length, 1);
+});

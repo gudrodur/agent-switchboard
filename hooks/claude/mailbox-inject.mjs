@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import { recordPresence } from '../../lib/presence.mjs';
-import { mailboxFileDir, readUnackedBySession, readUnackedByRoles, rolesHeldBy, claimRoleFromEnv, ack } from '../../lib/agent-mailbox.mjs';
+import { mailboxFileDir, readUnackedBySession, readUnackedByRoles, rolesHeldBy, claimRoleFromEnv, claimNudge, readPresenceBeacons, ack } from '../../lib/agent-mailbox.mjs';
 // Whole stdin as a string. Resolves with whatever arrived when the stream
 // ends, errors, or the timeout fires, so the hook never hangs on a half-open
 // pipe. Inlined here (the only use) so this hook ships no library.
@@ -70,6 +70,7 @@ try {
   const dir = mailboxFileDir();
   const opts = dir ? { dir } : {};
   let found;
+  let firstPrompt = false;
   try {
     if (dir) assertMailboxReadable(dir);
     // AGENT_SEAT_ROLE: the first prompt claims the role (see
@@ -77,6 +78,13 @@ try {
     // so mail sent while no seat held the role reaches the next holder.
     const rawWin0 = process.env.KITTY_WINDOW_ID;
     const win0 = rawWin0 != null && rawWin0 !== '' ? Number(rawWin0) : null;
+    // The hook records this session's beacon at the end of every prompt, so a
+    // session with no beacon yet is on its first prompt.
+    try {
+      firstPrompt = sessionId != null && !readPresenceBeacons({ includeStale: true }).some((b) => b.sessionId === sessionId);
+    } catch {
+      firstPrompt = false;
+    }
     claimRoleFromEnv({ sessionId, cwd, windowId: Number.isFinite(win0) ? win0 : null });
     found = [...readUnackedBySession(sessionId, opts), ...readUnackedByRoles(rolesHeldBy(sessionId), opts)];
   } catch (e) {
@@ -91,10 +99,14 @@ try {
         // Best-effort — the row is still printed below.
       }
     }
-    if (found.length) {
-      const lines = found.map(
-        ({ row }) => `[mailbox] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}`,
-      );
+    const lines = found.map(
+      ({ row }) => `[mailbox] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}`,
+    );
+    if (firstPrompt) {
+      const nudge = claimNudge({ sessionId, cwd });
+      if (nudge) lines.push(nudge);
+    }
+    if (lines.length) {
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') },
