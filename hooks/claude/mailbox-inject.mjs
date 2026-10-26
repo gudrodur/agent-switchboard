@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import { recordPresence } from '../../lib/presence.mjs';
-import { mailboxFileDir, readUnackedBySession, readUnackedByRoles, rolesHeldBy, claimRoleFromEnv, ack } from '../../lib/agent-mailbox.mjs';
+import { mailboxFileDir, readUnackedBySession, readUnackedByRoles, rolesHeldBy, claimRoleFromEnv, claimNudgeOnce, ack } from '../../lib/agent-mailbox.mjs';
 // Whole stdin as a string. Resolves with whatever arrived when the stream
 // ends, errors, or the timeout fires, so the hook never hangs on a half-open
 // pipe. Inlined here (the only use) so this hook ships no library.
@@ -91,10 +91,13 @@ try {
         // Best-effort — the row is still printed below.
       }
     }
-    if (found.length) {
-      const lines = found.map(
-        ({ row }) => `[mailbox] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}`,
-      );
+    const lines = found.map(
+      ({ row }) => `[mailbox] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}`,
+    );
+    // Once per session (seat_nudges), after the claim above.
+    const nudge = claimNudgeOnce({ sessionId, cwd });
+    if (nudge) lines.push(nudge);
+    if (lines.length) {
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') },

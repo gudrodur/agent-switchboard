@@ -91,7 +91,8 @@ A window id dies with its window: when a seat is replaced by a new session in a 
 
 - **Claim:** `agent-send.mjs --claim-role lead` makes the current session the holder; a later claim takes the role over. Launch a tab with `--role lead` (`claude-tab.sh`, `omp-tab.sh`) and the session claims the role on its first prompt through `AGENT_SEAT_ROLE`, but only when the role is free or its holder is no longer live, so a replaced seat cannot take the role back from its successor.
 - **Send:** a live holder receives the message exactly as if you had addressed its session. With no live holder the message is queued under the mailbox key `role:<name>` (exit 3, "queued for role X; no live holder"), and the next session that claims the role receives it on its next prompt.
-- **Inspect:** `agent-send.mjs --who` lists live seats; `--json` prints the same for machines. A `--to <window>` that matches no window lists the live seats in your repo and every role holder.
+- **Inspect:** `agent-send.mjs --who` lists live seats; `--json` prints the same for machines. A `--to <window>` that matches no window lists the live seats in your repo and every role holder. `--who` shows one row per seat (beacons from a subdirectory of a checkout collapse into its git toplevel, and a detached HEAD prints as `HEAD@<short sha>`).
+- **Nudge:** on a session's first prompt, a seat that holds no role (and has no `AGENT_SEAT_ROLE`) gets one context line saying window-id mail is lost when the window closes, with the exact `--claim-role` command. It is shown once per session id (the `seat_nudges` table), whichever hooks record presence for that prompt.
 
 Roles live in the `seat_roles` table of the SQLite store (`AGENT_SWITCHBOARD_DB` or the default state db), also when the mailbox itself is still on the legacy file backend.
 

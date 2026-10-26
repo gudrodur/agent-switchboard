@@ -69,6 +69,7 @@ import {
   readUnackedByRoles,
   rolesHeldBy,
   claimRoleFromEnv,
+  claimNudgeOnce,
 } from "../../../lib/agent-mailbox.mjs";
 import { kittyWindowId } from "../lib/window-id.ts";
 // Explicit `.ts` specifier (the source used the compiled `.js` extension):
@@ -286,6 +287,17 @@ export default function mailboxHook(pi: HookAPI): void {
   const deliver = (ctx) => {
     const cwd = ctxCwd(ctx);
     const sessionId = sessionIdOf(ctx?.sessionManager);
+    // Once per session (seat_nudges): one line telling a role-less seat how to
+    // claim a stable address. Runs after the drain, which claims AGENT_SEAT_ROLE.
+    const nudgeFirst = () => {
+      if (sessionId == null) return;
+      try {
+        const content = claimNudgeOnce({ sessionId, cwd });
+        if (content) pi.sendMessage({ customType: MESSAGE_TYPE, display: true, content });
+      } catch {
+        // advisory
+      }
+    };
     try {
       for (const { row, deliveredAs } of drainInbox({ cwd, sessionId })) {
         pi.sendMessage(
@@ -297,6 +309,7 @@ export default function mailboxHook(pi: HookAPI): void {
           { deliverAs: deliveredAs },
         );
       }
+      nudgeFirst();
     } catch (err) {
       const content = `[mailbox] could not drain the mailbox: ${err?.message ?? err}`;
       if (!reportedDrainFailures.has(content)) {

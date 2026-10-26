@@ -57,10 +57,13 @@ before(async () => {
   assert.equal(recipientKey({ cwd: CWD, sessionId: SID }), KEY);
 });
 
-test('empty inbox prints nothing, exits 0, and marks the presence entry a consumer', () => {
+test('empty inbox prints only the first-prompt claim nudge, exits 0, and marks the presence entry a consumer', () => {
   const res = runHook();
   assert.equal(res.status, 0);
-  assert.equal(res.stdout, '');
+  assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /^\[mailbox\] This seat holds no role/);
+  const again = runHook();
+  assert.equal(again.status, 0);
+  assert.equal(again.stdout, '');
   const mine = presenceBeacons().filter((b) => b.cwd === CWD && b.sessionId === SID);
   assert.equal(mine.length, 1);
   assert.equal(mine[0].mailbox, true);
