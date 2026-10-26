@@ -7,6 +7,7 @@
 #   claude-tab.sh --title "claude: <what this is>" --brief /abs/brief.md \
 #                 --model opus|sonnet|haiku|fable|<full model id> [--rc [NAME]]
 #                 [--out /abs/out.md] [--cwd /abs/repo] [--slot-override "<reason>"]
+#                 [--role NAME]
 #   claude-tab.sh --seat --title "claude: <name>" --model ... [--rc [NAME]]
 #                 [--brief /abs/brief.md] [--cwd /abs/repo]
 #   claude-tab.sh --resume <session-id> --title "claude: <name>" --model ...
@@ -16,6 +17,11 @@
 #
 #   --rc [NAME]  start the session with Remote Control on, named NAME (default:
 #                the --title), and require the bridge-session row as proof
+#   --role NAME  start the session with AGENT_SEAT_ROLE=NAME in its environment:
+#                its first prompt claims the seat role (mail for `--to role:NAME`
+#                then follows this session; see agent-send.mjs --claim-role).
+#                The session is also started with --name <title>, so the kitty
+#                window title is the tab title, not the first prompt.
 #   --seat       an overseer seat, not a package tab: no state row, so it never
 #                holds the one-slot gate, no slot check and no brief claim, and
 #                --brief is optional (without one a fixed greeting starts the
@@ -101,7 +107,7 @@ case "${1:-}" in
   --list|--close) exec "$HERE/omp-tab.sh" "$@" ;;
 esac
 
-TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; CWD_SET=0; SLOT_OVERRIDE=""; RC=0; RC_NAME=""; SEAT=0; RESUME=""
+TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; CWD_SET=0; SLOT_OVERRIDE=""; RC=0; RC_NAME=""; SEAT=0; RESUME=""; ROLE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --title) TITLE="${2:-}"; shift 2 ;;
@@ -110,6 +116,7 @@ while [ $# -gt 0 ]; do
     --model|-m) MODEL="${2:-}"; shift 2 ;;
     --cwd) CWD="${2:-}"; CWD_SET=1; shift 2 ;;
     --resume) RESUME="${2:-}"; shift 2 ;;
+    --role) ROLE="${2:-}"; shift 2 ;;
     --slot-override) SLOT_OVERRIDE="${2:-}"; shift 2 ;;
     --seat) SEAT=1; shift ;;
     --rc)
@@ -120,6 +127,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$TITLE" ] || die "--title is required"
+if [ -n "$ROLE" ] && ! printf '%s' "$ROLE" | /usr/bin/grep -Eq '^[a-z0-9][a-z0-9-]{0,63}$'; then
+  die "--role must match [a-z0-9][a-z0-9-]{0,63}, got: '$ROLE'"
+fi
 [ -n "$MODEL" ] || die "--model is required: a tab on the account default is the run nobody chose"
 case "$MODEL" in
   opus|sonnet|haiku|fable|claude-*) ;;
@@ -264,11 +274,13 @@ else
   MSG="This tab was opened as an overseer seat by claude-tab.sh --seat${RC_NAME:+, with Remote Control \"$RC_NAME\"}. Reply with one line saying you are ready, then wait for instructions."
 fi
 
-ARGS=("$CLAUDE_BIN" --model "$MODEL")
+ARGS=("$CLAUDE_BIN" --model "$MODEL" --name "$TITLE")
 [ "$RC" = 1 ] && ARGS+=(--remote-control "$RC_NAME")
 [ -n "$RESUME" ] && ARGS+=(--resume "$RESUME")
 ARGS+=("$MSG")
-WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" "${ARGS[@]}" 2>/dev/null)
+ENV_ARGS=()
+[ -n "$ROLE" ] && ENV_ARGS=(--env "AGENT_SEAT_ROLE=$ROLE")
+WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" "${ENV_ARGS[@]}" "${ARGS[@]}" 2>/dev/null)
 case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id, got: '$WID'" ;; esac
 WPID=$(win_pid "$WID")
 [ -n "$WPID" ] || { printf 'WINDOW_ID=%s\n' "$WID"; die "window $WID exited immediately after launch — run $CLAUDE_BIN --model $MODEL by hand" 3; }
