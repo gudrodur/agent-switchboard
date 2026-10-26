@@ -964,3 +964,96 @@ test('a live beacon without the flag says flag off', async () => {
   assert.equal(code, 5);
   assert.match(stderr, /no mailbox consumer flag for 991002 \(live beacon, flag off\)/);
 });
+
+// 2026-10-26 (agent-config#1291): a multi-line --text was queued, the
+// recipient stayed busy, and the withdraw path handed the text to kitty-send,
+// which refuses an embedded newline (exit 1, nothing sent). The mailbox
+// carries any text; only the kitty fallback needs one line, so the sender
+// writes the text to a note and sends kitty-send the --file pointer.
+const notesEnv = (notesDir, extra = {}) => childEnv({ AGENT_SWITCHBOARD_NOTES_DIR: notesDir, ...extra });
+
+test('a multi-line --text reaches kitty-send as a --file note on the withdraw path', async () => {
+  fs.rmSync(fallbackArgv, { force: true });
+  fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
+  const notesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentsend-notes-'));
+  try {
+    // A note past the retention window is pruned when a new one is written.
+    const stale = path.join(notesDir, 'old.md');
+    fs.writeFileSync(stale, 'old');
+    const past = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    fs.utimesSync(stale, past, past);
+    const text = 'line one\nline two\n\nline four';
+    const { code, stderr } = await runSend(
+      ['--to', '991001', '--text', text, '--deadline', '1'],
+      notesEnv(notesDir, { CLAUDE_CODE_SESSION_ID: 's2', AGENT_SEND_KITTY_SEND: realRulesStub }),
+    );
+    assert.equal(code, 0, stderr);
+    const argv = fs.readFileSync(fallbackArgv, 'utf-8').split('\n').filter(Boolean);
+    assert.ok(!argv.includes('--text'), `kitty-send got --text: ${argv.join(' ')}`);
+    const note = argv[argv.indexOf('--file') + 1];
+    assert.ok(note?.startsWith(notesDir + path.sep), `note outside the notes dir: ${note}`);
+    const body = fs.readFileSync(note, 'utf-8');
+    assert.ok(body.startsWith(text), 'the note carries the full text');
+    assert.match(body, /act on it once/);
+    assert.ok(!fs.existsSync(stale), 'a note past retention is pruned');
+    assert.match(stderr, /multi-line text written to .* for kitty-send --file/);
+    assert.deepEqual(readUnacked(KEY_S1, { dir: mboxDir }), []);
+  } finally {
+    fs.rmSync(notesDir, { recursive: true, force: true });
+  }
+});
+
+test('a multi-line --text reaches kitty-send as a --file note on the no-consumer path', async () => {
+  fs.rmSync(fallbackArgv, { force: true });
+  const notesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentsend-notes-'));
+  try {
+    const { code, stderr } = await runSend(
+      ['--to', '991002', '--text', 'first\nsecond'],
+      notesEnv(notesDir, { AGENT_SEND_KITTY_SEND: realRulesStub }),
+    );
+    assert.equal(code, 0, stderr);
+    const argv = fs.readFileSync(fallbackArgv, 'utf-8').split('\n').filter(Boolean);
+    assert.ok(!argv.includes('--text'));
+    assert.equal(fs.readFileSync(argv[argv.indexOf('--file') + 1], 'utf-8'), 'first\nsecond\n');
+  } finally {
+    fs.rmSync(notesDir, { recursive: true, force: true });
+  }
+});
+
+test('a one-line --text still goes to kitty-send inline', async () => {
+  fs.rmSync(fallbackArgv, { force: true });
+  const notesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentsend-notes-'));
+  try {
+    const { code } = await runSend(['--to', '991002', '--text', 'one line'], notesEnv(notesDir, { AGENT_SEND_KITTY_SEND: realRulesStub }));
+    assert.equal(code, 0);
+    const argv = fs.readFileSync(fallbackArgv, 'utf-8').split('\n').filter(Boolean);
+    assert.ok(argv.includes('--text') && argv.includes('one line'));
+    assert.deepEqual(fs.readdirSync(notesDir), []);
+  } finally {
+    fs.rmSync(notesDir, { recursive: true, force: true });
+  }
+});
+
+// 2026-10-26 (agent-config#1291): another session's `pkill -f
+// '[o]pencode.ai/docs/go'`, meant for its own curl, matched a waiting
+// agent-send whose --text quoted that URL, and SIGTERM ended the send 53 s
+// into its ack wait. The sender rewrites its process title once the argv is
+// parsed, so the payload is not in /proc/<pid>/cmdline for any pattern kill.
+test('the message text is not left in the waiting sender\'s command line', { skip: !fs.existsSync('/proc/self/cmdline') }, async () => {
+  fs.rmSync(mailboxPath(KEY_S1, { dir: mboxDir }), { force: true });
+  const marker = 'payload-marker-opencode.ai/docs/go';
+  const child = spawn('node', [SEND, '--to', KEY_S1, '--text', `see ${marker}`, '--deadline', '10'], { env: childEnv() });
+  const done = new Promise((resolve) => child.on('close', resolve));
+  let rowId = null;
+  const pollEnd = Date.now() + 8000;
+  while (rowId == null && Date.now() < pollEnd) {
+    await new Promise((r) => setTimeout(r, 100));
+    rowId = readUnacked(KEY_S1, { dir: mboxDir })[0]?.id ?? null;
+  }
+  assert.ok(rowId, 'sender never queued the row');
+  const cmdline = fs.readFileSync(`/proc/${child.pid}/cmdline`, 'utf-8').replace(/\0/g, ' ');
+  ack({ key: KEY_S1, id: rowId, deliveredAs: 'mcp', dir: mboxDir });
+  assert.equal(await done, 0);
+  assert.ok(!cmdline.includes(marker), `payload visible in cmdline: ${cmdline.trim()}`);
+  assert.match(cmdline, /^agent-send/);
+});

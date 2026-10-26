@@ -32,6 +32,15 @@
 // with kitty-send.sh into a window the sender may type into, and confirm it
 // on the target's screen, since it writes no session row to prove it by.
 //
+// The process title is rewritten to "agent-send" once the argv is parsed,
+// so the message text is not in /proc/<pid>/cmdline: another session's
+// `pkill -f <pattern>` aimed at its own process matched a waiting sender
+// whose --text quoted the same URL, and SIGTERM ended the send (2026-10-26,
+// agent-config#1291). A multi-line --text travels the mailbox as it is; on
+// the kitty fallback, which types one line, it is written to a note under
+// the switchboard state dir (AGENT_SWITCHBOARD_NOTES_DIR overrides) and
+// sent as --file. Notes older than NOTE_RETENTION_DAYS are pruned there.
+//
 // Tests only: AGENT_SEND_KITTY_SEND replaces the kitty-send.sh path
 // (a stub records its argv), and the AGENT_MAILBOX_* seams of
 // lib/agent-mailbox.mjs apply.
@@ -40,6 +49,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import {
   ack,
   appendMessage,
@@ -52,6 +62,7 @@ import {
   resolveRecipient,
   waitForAck,
 } from '../lib/agent-mailbox.mjs';
+import { switchboardDir } from '../lib/presence.mjs';
 
 const die = (msg, code = 1) => {
   process.stderr.write(`agent-send: ${msg}\n`);
@@ -77,10 +88,11 @@ const usage = () => `Usage:
                 message reaches it. An ack proves the row was queued and taken,
                 never that the file is still readable — a sender that deletes its
                 scratch file after the ack delivers a dangling pointer. For a
-                short message, --text carries it inline, but --text is ONE line
-                (an embedded newline submits a truncated first line — which is
-                why --file exists at all). For anything longer, leave the file in
-                place until the recipient confirms it has the message.
+                short message, --text carries it inline. A multi-line --text
+                reaches a mailbox consumer whole; on the kitty fallback, which
+                types one line, it is written to a note in the switchboard
+                state dir and sent as --file. For anything longer, leave the
+                file in place until the recipient confirms it has the message.
 
   Exit: 0 acked, or delivered and proven by kitty-send; 3 not delivered yet and
   do not resend: the row is queued in the mailbox for the consumer, or kitty-send
@@ -127,6 +139,29 @@ const fileNote = (file) =>
   `Note from ${senderLabel()}: read ${file}, ` +
   `a note written for you, and act on what it says. Use absolute paths and 'git -C <dir> ...'; do NOT rely on 'cd'.`;
 
+// The kitty fallback types one line, so a multi-line text goes there as a
+// --file note. The notes live in the switchboard state dir, not a session
+// scratchpad, because the recipient may read the pointer long after the
+// sender's session has ended.
+const NOTE_RETENTION_DAYS = 14;
+const notesDir = () => process.env.AGENT_SWITCHBOARD_NOTES_DIR ?? path.join(switchboardDir(), 'notes');
+const writeNote = (text, id) => {
+  const dir = notesDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const cutoff = Date.now() - NOTE_RETENTION_DAYS * 24 * 3600 * 1000;
+  for (const name of fs.readdirSync(dir)) {
+    const p = path.join(dir, name);
+    try {
+      if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true });
+    } catch {
+      // Another sender pruned it first.
+    }
+  }
+  const note = path.join(dir, `${id ?? randomUUID()}.md`);
+  fs.writeFileSync(note, text.endsWith('\n') ? text : `${text}\n`, { mode: 0o600 });
+  return note;
+};
+
 const senderWindowId = () => {
   const raw = process.env.KITTY_WINDOW_ID;
   if (raw == null || raw === '') return null;
@@ -135,6 +170,7 @@ const senderWindowId = () => {
 };
 
 const main = (argv) => {
+  process.title = 'agent-send';
   let to = null;
   let text = null;
   let file = null;
@@ -235,11 +271,15 @@ const main = (argv) => {
   // into a window, so send_message keeps those as errors.
   const senderSessionId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
   // One kitty-send run; returns its exit status (null when a signal killed it).
-  const runKittySend = (why, target, sendText) => {
+  const runKittySend = (why, target, sendText, noteId = null) => {
     process.stderr.write(`agent-send: ${why}, falling back to kitty-send\n`);
     const args = ['--to', String(target)];
     if (file != null) args.push('--file', file);
-    else args.push('--text', sendText);
+    else if (sendText.includes('\n')) {
+      const note = writeNote(sendText, noteId);
+      process.stderr.write(`agent-send: multi-line text written to ${note} for kitty-send --file\n`);
+      args.push('--file', note);
+    } else args.push('--text', sendText);
     if (priority === 'idle') args.push('--idle-when', idleWhen);
     if (priority === 'queue') args.push('--queue');
     // A bare --text is priority now but forwards nothing: kitty-send.sh keeps
@@ -357,6 +397,7 @@ const main = (argv) => {
     `queued, recipient busy/parked for ${row.id}`,
     target,
     `${text} (If this same steer reaches you twice, act on it once: the mailbox copy was withdrawn.)`,
+    row.id,
   );
   // On these codes kitty-send sent NOTHING (usage or no window, a dialog, the
   // idle wait ran out, a send already queued, mid-turn without --now). The row
