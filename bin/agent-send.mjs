@@ -54,6 +54,7 @@ import {
   ack,
   appendMessage,
   cancelQueued,
+  listSeats,
   mailboxPath,
   pruneStale,
   readUnacked,
@@ -63,6 +64,7 @@ import {
   waitForAck,
 } from '../lib/agent-mailbox.mjs';
 import { switchboardDir } from '../lib/presence.mjs';
+import { claimRole, validateRoleName, withRolesDb } from '../lib/seat-roles.mjs';
 
 const die = (msg, code = 1) => {
   process.stderr.write(`agent-send: ${msg}\n`);
@@ -73,6 +75,8 @@ const usage = () => `Usage:
                  [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
   agent-send.mjs --read [--as <session-id>]
   agent-send.mjs --cancel --to <mailbox-key> --id <row-id>
+  agent-send.mjs --claim-role <name> [--as <session-id>]
+  agent-send.mjs --who [--json]
 
   --now         priority now (default when no mode is given)
   --stop        priority stop: interrupts the consumer's current run
@@ -82,6 +86,13 @@ const usage = () => `Usage:
   --read        print this session's unacked inbox rows and ack them (inbox read;
                 the session is CLAUDE_CODE_SESSION_ID unless --as names it)
   --cancel      withdraw one queued row so a later drain cannot deliver it
+  --to role:<name>  address a seat role instead of a window: it follows the
+                session holding the role, and with no live holder the message
+                is queued for the next holder (exit 3)
+  --claim-role  make the current session the holder of a role (a later claim
+                takes it over); name is [a-z0-9][a-z0-9-]{0,63}
+  --who         list live seats: window, session, cwd, repo, branch, roles,
+                kitty window title; --json prints it for machines
 
   --file is a POINTER, not a payload: the recipient is sent "read <path>, a note
                 written for you" and reads whatever is on disk whenever the
@@ -181,6 +192,9 @@ const main = (argv) => {
   let cancel = false;
   let asSession = null;
   let rowId = null;
+  let claimRoleName = null;
+  let who = false;
+  let json = false;
   const rest = [...argv];
   while (rest.length > 0) {
     const a = rest.shift();
@@ -203,6 +217,9 @@ const main = (argv) => {
     else if (a === '--cancel') cancel = true;
     else if (a === '--as') asSession = need('--as');
     else if (a === '--id') rowId = need('--id');
+    else if (a === '--claim-role') claimRoleName = need('--claim-role');
+    else if (a === '--who') who = true;
+    else if (a === '--json') json = true;
     else if (a === '--help' || a === '-h') {
       process.stdout.write(usage());
       process.exit(0);
@@ -225,6 +242,36 @@ const main = (argv) => {
       }
     }
     process.stderr.write(`agent-send: inbox ${found.length} unacked row(s) for ${sessionId}\n`);
+    process.exit(0);
+  }
+  if (json && !who) die('--json goes with --who');
+  if (who) {
+    if (to != null || text != null || file != null || mode != null || cancel || claimRoleName != null) die('--who takes only --json');
+    const seats = listSeats();
+    if (json) process.stdout.write(`${JSON.stringify(seats, null, 2)}\n`);
+    else {
+      const rows = seats.map((x) => [
+        x.windowId ?? '-', (x.sessionId ?? 'anon').slice(0, 8), x.cwd, x.repo ?? '-', x.branch ?? '-',
+        x.roles.join(',') || '-', x.title ?? '-',
+      ].map(String));
+      const head = ['WINDOW', 'SESSION', 'CWD', 'REPO', 'BRANCH', 'ROLES', 'TITLE'];
+      const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+      for (const r of [head, ...rows]) process.stdout.write(`${r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd()}\n`);
+    }
+    process.exit(0);
+  }
+  if (claimRoleName != null) {
+    if (to != null || text != null || file != null || mode != null || cancel) die('--claim-role takes only --as');
+    try { validateRoleName(claimRoleName); } catch (e) { die(e.message); }
+    const sessionId = asSession ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
+    if (sessionId == null) die('--claim-role needs --as <session-id> outside a host-agent session');
+    const wid = senderWindowId();
+    const prev = withRolesDb((db) => {
+      const before = db.get('SELECT session_id FROM seat_roles WHERE role = ?', claimRoleName);
+      claimRole(db, { role: claimRoleName, sessionId, cwd: process.cwd(), windowId: wid });
+      return before?.session_id ?? null;
+    });
+    process.stderr.write(`agent-send: ${sessionId} now holds role ${claimRoleName}${prev && prev !== sessionId ? ` (took over from ${prev})` : ''}\n`);
     process.exit(0);
   }
   // Cancel: withdraw one queued row so a later drain cannot deliver it.
@@ -318,8 +365,14 @@ const main = (argv) => {
     }
     return r.status;
   };
-  const kittyFallback = (why) => process.exit(runKittySend(why, to, text) ?? 1);
   let recipient;
+  // A role is not a kitty target: fall back to the window its holder's
+  // beacon recorded, and fail loudly when it recorded none.
+  const kittyFallback = (why) => {
+    const t = recipient?.role != null ? recipient.beaconWindowId : to;
+    if (t == null) die(`${why}, and role ${recipient.role} has no kitty window to fall back to`);
+    process.exit(runKittySend(why, t, text) ?? 1);
+  };
   try {
     recipient = resolveRecipient(to, { senderSessionId, senderCwd: process.cwd(), senderWindowId: senderWindowId() });
   } catch (e) {
@@ -330,6 +383,12 @@ const main = (argv) => {
     die(e.message);
   }
 
+  if (recipient.queuedForRole) {
+    const qfrom = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
+    const qrow = appendMessage({ to: recipient.key, from: qfrom, priority, text });
+    process.stderr.write(`agent-send: queued for role ${recipient.role}; no live holder${recipient.holderSessionId ? ` (last holder ${recipient.holderSessionId} is gone)` : ''}. Row ${qrow.id} in ${mailboxPath(recipient.key)}; the next session that claims the role receives it (exit 3: not delivered yet, do not resend; withdraw with --cancel --to ${recipient.key} --id ${qrow.id})\n`);
+    process.exit(3);
+  }
   if (!recipient.hasConsumer) {
     kittyFallback(`no mailbox consumer flag for ${to} (live beacon, flag off)`);
   }
@@ -382,7 +441,7 @@ const main = (argv) => {
   // key whose beacon recorded no window id (an omp tab before its consumer
   // records one, or a cwd two sessions share) has nowhere to fall back to, so
   // the row stays queued for the consumer's next tool boundary.
-  const target = recipient.windowId ?? recipient.beaconWindowId ?? (/__/.test(to) ? null : to);
+  const target = recipient.windowId ?? recipient.beaconWindowId ?? (/__/.test(to) || recipient.role != null ? null : to);
   if (target == null) {
     process.stderr.write(`agent-send: queued, recipient busy/parked for ${row.id} in ${mbox}; no kitty window for ${to}, so the row stays queued for the consumer's next tool boundary (exit 3: not delivered yet, do not resend; withdraw it with --cancel --to ${recipient.key} --id ${row.id}, or re-send with --to <window-id>)\n`);
     process.exit(3);

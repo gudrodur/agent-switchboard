@@ -445,3 +445,25 @@ test('--resume with --brief sends the brief instead of the greeting', async () =
   assert.equal(r.code, 0, r.err);
   assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), new RegExp(`^Read ${brief} and carry it out`, 'm'));
 });
+
+test('the session is named after the tab title, so the window title is not the first prompt', async () => {
+  await session('claude-opus-5-5');
+  const r = await tab(full());
+  assert.equal(r.code, 0, r.err);
+  assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), /^--name\nclaude: test$/m);
+});
+
+test('--role puts AGENT_SEAT_ROLE in the launched window environment', async () => {
+  await session('claude-opus-5-5');
+  const r = await tab(full('--role', 'lead'));
+  assert.equal(r.code, 0, r.err);
+  const args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
+  assert.match(args, /^--env\nAGENT_SEAT_ROLE=lead$/m);
+});
+
+test('a role name outside [a-z0-9][a-z0-9-]{0,63} is refused and nothing is launched', async () => {
+  const r = await tab(full('--role', 'Lead Seat'));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /--role must match/);
+  assert.equal(await exists('launch-args'), false);
+});

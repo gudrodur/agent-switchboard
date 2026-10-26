@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import { recordPresence } from '../../lib/presence.mjs';
-import { mailboxFileDir, readUnackedBySession, ack } from '../../lib/agent-mailbox.mjs';
+import { mailboxFileDir, readUnackedBySession, readUnackedByRoles, rolesHeldBy, claimRoleFromEnv, ack } from '../../lib/agent-mailbox.mjs';
 // Whole stdin as a string. Resolves with whatever arrived when the stream
 // ends, errors, or the timeout fires, so the hook never hangs on a half-open
 // pipe. Inlined here (the only use) so this hook ships no library.
@@ -72,7 +72,13 @@ try {
   let found;
   try {
     if (dir) assertMailboxReadable(dir);
-    found = readUnackedBySession(sessionId, opts);
+    // AGENT_SEAT_ROLE: the first prompt claims the role (see
+    // claimRoleFromEnv), and every prompt drains the queue of each role held,
+    // so mail sent while no seat held the role reaches the next holder.
+    const rawWin0 = process.env.KITTY_WINDOW_ID;
+    const win0 = rawWin0 != null && rawWin0 !== '' ? Number(rawWin0) : null;
+    claimRoleFromEnv({ sessionId, cwd, windowId: Number.isFinite(win0) ? win0 : null });
+    found = [...readUnackedBySession(sessionId, opts), ...readUnackedByRoles(rolesHeldBy(sessionId), opts)];
   } catch (e) {
     process.stdout.write(`[mailbox] could not read inbox: ${e.message ?? e}\n`);
     found = null;
