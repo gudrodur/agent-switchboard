@@ -344,6 +344,9 @@ const main = (argv) => {
     } else args.push('--text', sendText);
     if (priority === 'idle') args.push('--idle-when', idleWhen);
     if (priority === 'queue') {
+      // The withdraw path runs under --queue only after --deadline bounded the
+      // ack wait (without it the wait is unbounded and never falls through),
+      // so the 120 s is a guard for a future caller, not a reachable default.
       if (requeue) args.push('--wait-idle', deadline != null ? String(deadline) : '120');
       else args.push('--queue');
     }
