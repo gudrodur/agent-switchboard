@@ -1083,3 +1083,45 @@ test('the message text is not left in the waiting sender\'s command line', { ski
   assert.ok(!cmdline.includes(marker), `payload visible in cmdline: ${cmdline.trim()}`);
   assert.match(cmdline, /^agent-send/);
 });
+
+// agent-config#1355 W5 (2026-10-27): window 327's own beacon had aged out
+// while its seat sat in one long turn, and the cwd fallback delivered the
+// note to the only live beacon on that cwd: seat 304's, whose beacon
+// recorded window 304. A beacon that names another window is that window's
+// session, never a candidate for this one.
+test('the cwd fallback skips a beacon that recorded another window id', () => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  try {
+    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(presFile, JSON.stringify({ beacons: [
+      { sessionId: 'busy-seat', cwd: '/repo/a', mailbox: true, windowId: 991001, firstTick: old, lastTick: old },
+      { sessionId: 'other-seat', cwd: '/repo/a', mailbox: true, windowId: 991777, firstTick: nowIso(), lastTick: nowIso() },
+    ] }));
+    const err = (() => {
+      try {
+        resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 'sender', senderCwd: '/elsewhere' });
+      } catch (e) {
+        return e;
+      }
+      assert.fail('expected resolveRecipient to throw, not to deliver to the other window');
+    })();
+    assert.equal(err.code, 'mailbox-stale');
+    assert.match(err.message, /window 991001 has no LIVE presence beacon/);
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+});
+
+test('the cwd fallback still resolves a beacon that recorded no window id', () => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  try {
+    writePresence([
+      { sessionId: 'legacy', cwd: '/repo/a', mailbox: true },
+      { sessionId: 'other-seat', cwd: '/repo/a', mailbox: true, windowId: 991777 },
+    ]);
+    const r = resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 'sender', senderCwd: '/elsewhere' });
+    assert.equal(r.sessionId, 'legacy');
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+});
