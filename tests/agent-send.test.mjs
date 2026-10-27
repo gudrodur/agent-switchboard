@@ -433,6 +433,56 @@ test('a window shared by three sessions is ambiguous even after excluding the se
   }
 });
 
+// agent-config#1355: one Claude Code session whose worktree subagent wrote a
+// second presence beacon under the worktree cwd is ONE recipient: both
+// beacons carry the same sessionId, and every consumer drains by session id.
+const writePresenceTicks = (beacons) =>
+  fs.writeFileSync(presFile, JSON.stringify({ beacons: beacons.map((b) => ({ firstTick: b.lastTick, ...b })) }));
+const sameSessionBeacons = () => [
+  { sessionId: 's1', cwd: '/repo/z', mailbox: true, lastTick: new Date(Date.now() - 60000).toISOString() },
+  { sessionId: 'sx', cwd: '/repo/a', mailbox: true, windowId: 991001, lastTick: new Date(Date.now() - 30000).toISOString() },
+  { sessionId: 'sx', cwd: '/repo/a/.claude/worktrees/agent-1', mailbox: true, windowId: 991001, lastTick: nowIso() },
+];
+
+test('two beacons of one session on one window are one recipient, the newest-tick key', () => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  try {
+    writePresenceTicks(sameSessionBeacons());
+    const r = resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/z' });
+    assert.equal(r.key, '-repo-a-.claude-worktrees-agent-1__sx');
+    assert.equal(r.sessionId, 'sx');
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+});
+
+test('a mailbox key whose session id matches two same-session beacons resolves to the newest', () => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  try {
+    writePresenceTicks(sameSessionBeacons());
+    const r = resolveRecipient('-repo-gone__sx', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/z' });
+    assert.equal(r.key, '-repo-a-.claude-worktrees-agent-1__sx');
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+});
+
+test('same-session collapse leaves two different session ids ambiguous', () => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  try {
+    writePresenceTicks([
+      ...sameSessionBeacons(),
+      { sessionId: 'sy', cwd: '/repo/a', mailbox: true, windowId: 991001, lastTick: nowIso() },
+    ]);
+    assert.throws(
+      () => resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/z' }),
+      /matches 2 live sessions/,
+    );
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+});
+
 // agent-config#914 row 2: a headless local-agent worker that inherits its
 // parent tab's KITTY_WINDOW_ID (forgot `env -u KITTY_WINDOW_ID`, see
 // skills/local-agents/SKILL.md) records a beacon on the SAME window id as
@@ -752,23 +802,18 @@ test('a stale key whose session id has no live beacon keeps the no-live-session 
   }
 });
 
-test('a pre-move key shared by two live beacons is ambiguous, never a guess', () => {
+// agent-config#1355: the two beacons carry one session id, so they are one
+// recipient (the old expectation was mailbox-ambiguous, which refused a send
+// to a session whose worktree subagent wrote a second beacon).
+test('a pre-move key shared by two live beacons of one session resolves to one recipient', () => {
   const saved = fs.readFileSync(presFile, 'utf-8');
   try {
     writePresence([
       { sessionId: 's1', cwd: '/repo/wt-a', mailbox: true },
       { sessionId: 's1', cwd: '/repo/wt-b' },
     ]);
-    const err = (() => {
-      try {
-        resolveRecipient('-repo-a__s1', { presenceFile: presFile });
-      } catch (e) {
-        return e;
-      }
-      assert.fail('expected resolveRecipient to throw');
-    })();
-    assert.equal(err.code, 'mailbox-ambiguous');
-    assert.match(err.message, /2 live sessions/);
+    const r = resolveRecipient('-repo-a__s1', { presenceFile: presFile });
+    assert.equal(r.sessionId, 's1');
   } finally {
     fs.writeFileSync(presFile, saved);
   }
