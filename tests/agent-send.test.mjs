@@ -1009,15 +1009,16 @@ test('a queued kitty fallback (exit 0 under --queue) is pending: exit 3, names t
   assert.match(stderr, /do not resend/);
 });
 
-// A supervisor idle ~30 min ages past the 20-min presence window, so its
-// beacon (mailbox flag and all) is pruned. The fallback line must say WHY:
-// no beacon, stale beacon since <time>, or live beacon with the flag off.
+// A supervisor idle ~30 min ages past the 20-min presence window. With its
+// writer pid alive and its window open it is an IDLE seat (role-ownership.test.mjs);
+// with a dead writer pid (these fixtures) it is stale. The fallback line must
+// say WHY: no beacon, stale beacon since <time>, or live beacon with the flag off.
 test('a steer to a window whose beacon went stale names the last tick', async () => {
   const saved = fs.readFileSync(presFile, 'utf-8');
   try {
     const old = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     fs.writeFileSync(presFile, JSON.stringify({ beacons: [
-      { sessionId: 's9', cwd: '/repo/b', mailbox: true, windowId: 991002, firstTick: old, lastTick: old },
+      { sessionId: 's9', cwd: '/repo/b', mailbox: true, windowId: 991002, pid: spawnSync('node', ['-e', '0']).pid, firstTick: old, lastTick: old },
     ] }));
     const { code, stderr } = await runSend(
       ['--to', '991002', '--text', 'stale steer'],
@@ -1139,7 +1140,7 @@ test('the cwd fallback skips a beacon that recorded another window id', () => {
   try {
     const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     fs.writeFileSync(presFile, JSON.stringify({ beacons: [
-      { sessionId: 'busy-seat', cwd: '/repo/a', mailbox: true, windowId: 991001, firstTick: old, lastTick: old },
+      { sessionId: 'busy-seat', cwd: '/repo/a', mailbox: true, windowId: 991001, pid: spawnSync('node', ['-e', '0']).pid, firstTick: old, lastTick: old },
       { sessionId: 'other-seat', cwd: '/repo/a', mailbox: true, windowId: 991777, firstTick: nowIso(), lastTick: nowIso() },
     ] }));
     const err = (() => {

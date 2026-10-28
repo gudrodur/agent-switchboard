@@ -55,6 +55,7 @@ import {
   appendMessage,
   cancelQueued,
   listSeats,
+  liveRoleHolder,
   mailboxPath,
   pruneStale,
   readUnacked,
@@ -75,7 +76,7 @@ const usage = () => `Usage:
                  [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
   agent-send.mjs --read [--as <session-id>]
   agent-send.mjs --cancel --to <mailbox-key> --id <row-id>
-  agent-send.mjs --claim-role <name> [--as <session-id>]
+  agent-send.mjs --claim-role <name> [--take-over] [--as <session-id>]
   agent-send.mjs --who [--json]
 
   --now         priority now (default when no mode is given)
@@ -89,10 +90,18 @@ const usage = () => `Usage:
   --to role:<name>  address a seat role instead of a window: it follows the
                 session holding the role, and with no live holder the message
                 is queued for the next holder (exit 3)
-  --claim-role  make the current session the holder of a role (a later claim
-                takes it over); name is [a-z0-9][a-z0-9-]{0,63}
-  --who         list live seats: window, session, cwd, repo, branch, roles,
-                kitty window title; --json prints it for machines
+  --claim-role  make the current session the holder of a role; name is
+                [a-z0-9][a-z0-9-]{0,63}, by convention <repo>-<purpose> with
+                purpose naming the job (lead, ship, history-scrub); a seat may
+                hold several roles. A role whose holder is live is NOT taken:
+                exit 11 names the holder's window (close it, or --take-over).
+                A dead or absent holder is taken without the flag.
+  --take-over   with --claim-role: take the role from a live holder and queue
+                a mailbox row to the displaced session saying so
+  --who         list seats: window, session, cwd, repo, branch, roles, kitty
+                window title; a seat past the presence window whose process
+                and kitty window are still alive is listed as "idle <N>m";
+                --json prints it for machines
 
   --file is a POINTER, not a payload: the recipient is sent "read <path>, a note
                 written for you" and reads whatever is on disk whenever the
@@ -120,6 +129,7 @@ const usage = () => `Usage:
         exits 3 instead): 1 usage or precondition, 4 selection dialog open,
         5 idle wait ran out, 6 a send is already queued, 7 mid-turn without
         --now/--queue/--wait-idle, 9 composer holds unsubmitted text
+    11  --claim-role refused: the role's holder is live (nothing changed)
     any other code is unexpected: treat the message as not delivered, and look
     at the tab before resending
 `;
@@ -204,6 +214,7 @@ const main = (argv) => {
   let asSession = null;
   let rowId = null;
   let claimRoleName = null;
+  let takeOver = false;
   let who = false;
   let json = false;
   const rest = [...argv];
@@ -229,6 +240,7 @@ const main = (argv) => {
     else if (a === '--as') asSession = need('--as');
     else if (a === '--id') rowId = need('--id');
     else if (a === '--claim-role') claimRoleName = need('--claim-role');
+    else if (a === '--take-over') takeOver = true;
     else if (a === '--who') who = true;
     else if (a === '--json') json = true;
     else if (a === '--help' || a === '-h') {
@@ -256,6 +268,7 @@ const main = (argv) => {
     process.exit(0);
   }
   if (json && !who) die('--json goes with --who');
+  if (takeOver && claimRoleName == null) die('--take-over goes with --claim-role');
   if (who) {
     if (to != null || text != null || file != null || mode != null || cancel || claimRoleName != null) die('--who takes only --json');
     const seats = listSeats();
@@ -263,9 +276,9 @@ const main = (argv) => {
     else {
       const rows = seats.map((x) => [
         x.windowId ?? '-', (x.sessionId ?? 'anon').slice(0, 8), x.cwd, x.repo ?? '-', x.branch ?? '-',
-        x.roles.join(',') || '-', x.title ?? '-',
+        x.roles.join(',') || '-', x.idleMinutes != null ? `idle ${x.idleMinutes}m` : 'live', x.title ?? '-',
       ].map(String));
-      const head = ['WINDOW', 'SESSION', 'CWD', 'REPO', 'BRANCH', 'ROLES', 'TITLE'];
+      const head = ['WINDOW', 'SESSION', 'CWD', 'REPO', 'BRANCH', 'ROLES', 'STATE', 'TITLE'];
       const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
       for (const r of [head, ...rows]) process.stdout.write(`${r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd()}\n`);
     }
@@ -277,12 +290,29 @@ const main = (argv) => {
     const sessionId = asSession ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
     if (sessionId == null) die('--claim-role needs --as <session-id> outside a host-agent session');
     const wid = senderWindowId();
-    const prev = withRolesDb((db) => {
+    const outcome = withRolesDb((db) => {
+      const live = liveRoleHolder(db, claimRoleName, { sessionId });
+      if (live && !takeOver) return { refused: live };
       const before = db.get('SELECT session_id FROM seat_roles WHERE role = ?', claimRoleName);
       claimRole(db, { role: claimRoleName, sessionId, cwd: process.cwd(), windowId: wid });
-      return before?.session_id ?? null;
+      return { prev: before?.session_id ?? null, displaced: live };
     });
-    process.stderr.write(`agent-send: ${sessionId} now holds role ${claimRoleName}${prev && prev !== sessionId ? ` (took over from ${prev})` : ''}\n`);
+    if (outcome.refused) {
+      const h = outcome.refused;
+      const hw = h.window_id ?? h.beacon?.windowId ?? null;
+      die(`role ${claimRoleName} is held by live window ${hw ?? '(unknown)'} (session ${h.session_id}); it was not taken. Close that window, or pass --take-over to take the role and notify it`, 11);
+    }
+    const { prev, displaced } = outcome;
+    if (displaced) {
+      const b = displaced.beacon;
+      appendMessage({
+        to: recipientKey({ cwd: b.cwd, sessionId: b.sessionId }),
+        from: recipientKey({ cwd: process.cwd(), sessionId }),
+        priority: 'now',
+        text: `role ${claimRoleName} was taken over by window ${wid ?? '(unknown)'} (session ${sessionId}); mail addressed to role:${claimRoleName} no longer reaches you`,
+      });
+    }
+    process.stderr.write(`agent-send: ${sessionId} now holds role ${claimRoleName}${prev && prev !== sessionId ? ` (took over from ${prev}${displaced ? ', who was notified' : ''})` : ''}\n`);
     process.exit(0);
   }
   // Cancel: withdraw one queued row so a later drain cannot deliver it.
@@ -403,6 +433,7 @@ const main = (argv) => {
   } catch (e) {
     // Never just "no consumer": a stale beacon (parked past the presence
     // window) and no beacon at all need different next steps.
+    if (e?.code === 'mailbox-idle') kittyFallback(`seat idle ${e.idleMinutes}m, typing to wake it`);
     if (e?.code === 'mailbox-stale') kittyFallback(`stale mailbox beacon for ${to} (${e.message})`);
     if (e?.code === 'mailbox-self' || e?.code === 'mailbox-no-beacon') kittyFallback(`no mailbox consumer at ${to}`);
     die(e.message);
@@ -415,6 +446,7 @@ const main = (argv) => {
     process.exit(3);
   }
   if (!recipient.hasConsumer) {
+    if (recipient.idleMinutes != null) kittyFallback(`seat idle ${recipient.idleMinutes}m, typing to wake it`);
     kittyFallback(`no mailbox consumer flag for ${to} (live beacon, flag off)`);
   }
   const from = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
