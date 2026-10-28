@@ -24,7 +24,7 @@ test("a session's last work tree survives the worked row's prune", () => {
   const t0 = Date.now();
   recordPresence({ cwd: '/w/A', sessionId: 'S', work: true, now: t0 });
   recordPresence({ cwd: '/w/B', sessionId: 'S', now: t0 + 25 * MIN });
-  assert.equal(find('/w/A'), undefined);
+  assert.equal(find('/w/A', { now: t0 + 25 * MIN }), undefined);
   assert.equal(find('/w/B').lastWorkCwd, '/w/A');
 });
 
@@ -71,7 +71,7 @@ test('file backend: survives prune, inherits, and moves with work', () => {
   const t0 = Date.now();
   recordPresence({ file, cwd: '/w/A', sessionId: 'S', work: true, now: t0 });
   recordPresence({ file, cwd: '/w/B', sessionId: 'S', now: t0 + 25 * MIN });
-  assert.equal(find('/w/A', { file }), undefined);
+  assert.equal(find('/w/A', { file, now: t0 + 25 * MIN }), undefined);
   assert.equal(find('/w/B', { file }).lastWorkCwd, '/w/A');
   recordPresence({ file, cwd: '/w/C', sessionId: 'S', now: t0 + 26 * MIN });
   assert.equal(find('/w/C', { file }).lastWorkCwd, '/w/A');
