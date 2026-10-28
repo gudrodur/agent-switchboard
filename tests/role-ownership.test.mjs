@@ -15,16 +15,17 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { recordPresence, PRESENCE_STALE_MS } from '../lib/presence.mjs';
-import { recipientKey, readUnacked, claimNudge } from '../lib/agent-mailbox.mjs';
+import { recipientKey, readUnacked, claimNudge, idleBeacons, agentWindowIds } from '../lib/agent-mailbox.mjs';
 
 const SEND = fileURLToPath(new URL('../bin/agent-send.mjs', import.meta.url));
 
-let tmp, dbPath, kittyStub, kittySendStub, argvFile;
+let tmp, dbPath, kittyStub, kittySendStub, argvFile, procDir;
 const childEnv = (extra = {}) =>
   isolatedEnv({
     AGENT_SWITCHBOARD_DB: dbPath,
     AGENT_MAILBOX_KITTY: kittyStub,
     AGENT_SEND_KITTY_SEND: kittySendStub,
+    AGENT_MAILBOX_PROC_DIR: procDir,
     ...extra,
   });
 const send = (args, extra = {}) =>
@@ -59,10 +60,24 @@ before(() => {
   kittySendStub = path.join(tmp, 'kitty-send');
   fs.writeFileSync(kittySendStub, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nexit 0\n`, { mode: 0o755 });
   process.env.AGENT_MAILBOX_KITTY = kittyStub;
+  // Fake /proc: windows 410, 420, 430 run an agent; 411 runs only a shell.
+  procDir = path.join(tmp, 'proc');
+  const proc = (pid, comm, win) => {
+    fs.mkdirSync(path.join(procDir, String(pid)), { recursive: true });
+    fs.writeFileSync(path.join(procDir, String(pid), 'comm'), `${comm}\n`);
+    fs.writeFileSync(path.join(procDir, String(pid), 'environ'), `HOME=/h\0KITTY_WINDOW_ID=${win}\0`);
+  };
+  proc(101, 'claude', 410);
+  proc(102, 'bash', 411);
+  proc(103, 'omp', 420);
+  proc(104, 'claude', 430);
+  proc(105, 'bash', 410);
+  process.env.AGENT_MAILBOX_PROC_DIR = procDir;
 });
 after(() => {
   delete process.env.AGENT_SWITCHBOARD_DB;
   delete process.env.AGENT_MAILBOX_KITTY;
+  delete process.env.AGENT_MAILBOX_PROC_DIR;
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -82,6 +97,25 @@ test('a dead writer pid or a closed window is not listed', () => {
   const ids = who().map((s) => s.sessionId);
   assert.ok(!ids.includes('deadpid-1'), 'dead pid');
   assert.ok(!ids.includes('closed-1'), 'closed window');
+});
+
+test('a window running only a shell is not an idle seat, even with pid alive and window open', () => {
+  idleBeacon('shell-1', '/r/deadpid', 45, { windowId: 411 });
+  assert.ok(!who().some((s) => s.sessionId === 'shell-1'));
+});
+
+test('agentWindowIds: agent windows found in one scan; unreadable procDir is null; idleBeacons treats null as not idle', () => {
+  assert.deepEqual([...agentWindowIds({ procDir })].sort(), [410, 420, 430]);
+  assert.equal(agentWindowIds({ procDir: path.join(tmp, 'no-such-proc') }), null);
+  const wins = [{ id: 410 }, { id: 411 }];
+  assert.ok(idleBeacons({ wins, agentWindows: new Set([410]) }).some((b) => b.sessionId === 'idle-1'));
+  assert.deepEqual(idleBeacons({ wins, agentWindows: null }), []);
+  assert.ok(!idleBeacons({ wins, agentWindows: new Set([420]) }).some((b) => b.sessionId === 'idle-1'));
+});
+
+test('an unreadable /proc lists no idle seat and a send to it is not typed as idle', () => {
+  const r = send(['--who', '--json'], { AGENT_MAILBOX_PROC_DIR: path.join(tmp, 'no-such-proc') });
+  assert.ok(!JSON.parse(r.stdout).some((s) => s.idleMinutes != null));
 });
 
 test('a live seat in the same window supersedes the idle beacon of its predecessor', () => {
