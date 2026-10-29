@@ -976,11 +976,13 @@ test('--cancel on a delivered row exits 13, names the ack, writes nothing (file 
 });
 
 test('--cancel on an unknown id exits 14, writes nothing (file mode)', () => {
-  const before = fs.readdirSync(mboxDir).length;
+  // Every mailbox file's size, so an append to an existing file shows too.
+  const snapshot = () => fs.readdirSync(mboxDir).map((f) => `${f}:${fs.statSync(path.join(mboxDir, f)).size}`).sort();
+  const before = snapshot();
   const { code, stderr } = runCancel(['--to', '-repo-a__nobody', '--id', 'no-such-id']);
   assert.equal(code, 14);
   assert.match(stderr, /not withdrawn: no row no-such-id/);
-  assert.equal(fs.readdirSync(mboxDir).length, before);
+  assert.deepEqual(snapshot(), before);
 });
 
 test('--cancel on an already-withdrawn row exits 13 and writes no second withdraw (file mode)', () => {

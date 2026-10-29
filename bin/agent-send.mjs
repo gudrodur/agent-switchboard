@@ -597,7 +597,7 @@ const main = (argv) => {
   // is withdrawn, so without this the message is gone: put it back.
   if (KITTY_SENT_NOTHING.has(status)) {
     const again = appendMessage({ to: recipient.key, from, priority, text, topic });
-    process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing (${KITTY_NOTHING_REASON[status] ?? 'see kitty-send.sh'}) for ${row.id}; re-queued as ${again.id} in ${mbox} for the consumer's next tool boundary (exit 3: not delivered yet, do not resend)\n`);
+    process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing (${KITTY_NOTHING_REASON[status] ?? 'see kitty-send.sh'}) for ${row.id}; re-queued as ${again.id} in ${mbox} for the consumer's next tool boundary (exit 3: not delivered yet, do not resend; withdraw it with --cancel --id ${again.id})\n`);
     process.exit(3);
   }
   if (status == null) {

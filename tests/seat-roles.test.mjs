@@ -89,6 +89,19 @@ test('a later claim takes the role over', async () => {
   assert.equal(resolveRecipient('role:lead').key, recipientKey({ cwd: '/repo/proj', sessionId: 'holder-2' }));
 });
 
+test('a send queued for a role names --cancel --id, and that withdraws it (agent-config#1379)', () => {
+  const r = send(['--to', 'role:wrong-seat', '--text', 'misaddressed'], { CLAUDE_CODE_SESSION_ID: 'sender-c' });
+  assert.equal(r.status, 3, r.stderr);
+  const id = r.stderr.match(/--cancel --id (\S+?)\)/)?.[1];
+  assert.ok(id, `no --cancel --id in: ${r.stderr}`);
+  const c = send(['--cancel', '--to', 'role:wrong-seat', '--id', id]);
+  assert.equal(c.status, 0, c.stderr);
+  assert.match(c.stderr, /recipient role:wrong-seat/);
+  assert.deepEqual(readUnacked('role:wrong-seat', {}), []);
+  const again = send(['--cancel', '--id', id]);
+  assert.equal(again.status, 13, again.stderr);
+});
+
 test('a send to a role with no holder is queued, then drained by the holder after it claims', async () => {
   const r = send(['--to', 'role:ghost', '--text', 'hello ghost'], { CLAUDE_CODE_SESSION_ID: 'sender-1' });
   assert.equal(r.status, 3, r.stderr);
