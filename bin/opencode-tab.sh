@@ -7,7 +7,7 @@
 #   opencode-tab.sh --title "opencode: <what this is>" --brief /abs/brief.md \
 #                   --model PROVIDER/NAME [--out /abs/out.md] [--cwd /abs/repo]
 #                   [--slot-override "<reason>"] [--server URL] [--no-probe]
-#   opencode-tab.sh --list | --close <window-id>     (omp-tab.sh's, on the same state file;
+#   opencode-tab.sh --list | --close <window-id>     (lib/tab-ledger.sh, shared with claude-tab.sh;
 #                                                     --close also drops that window's beacon)
 #   opencode-tab.sh --help | -h
 #
@@ -21,7 +21,7 @@
 #                  hangs is refused before a tab opens (OPENCODE_TAB_PROBE_TIMEOUT
 #                  seconds, default 60). It costs a few tokens and a few seconds.
 #
-# Exit codes, the same table as omp-tab.sh:
+# Exit codes, the same table as claude-tab.sh:
 #   0  launched AND proven: presence beacon for the window, a new opencode
 #      session in --cwd, and that session's model is --model
 #   1  precondition failed (bad args, relative path, missing file, slot held,
@@ -30,9 +30,8 @@
 #   3  launched but not proven (window id still printed; a wrong model closes it)
 # HELP-END
 #
-# The smaller sibling of omp-tab.sh (agent-config#973). omp-tab.sh is 1000+
-# lines because omp needs a provider table, a key step, a readiness poll and a
-# send through kitty-send.sh; opencode needs none of them:
+# opencode needs no provider table, key step, readiness poll or send through
+# kitty-send.sh (agent-config#973):
 #
 #   * The brief goes in as `--prompt`, so no keystrokes are sent at all, and
 #     send-text's two silent failures (no matching window, no \r) cannot happen.
@@ -42,11 +41,11 @@
 #   * The Cloudflare MCP tokens come from agent-config's opencode-launch.sh,
 #     which this execs rather than the bare binary.
 #
-# Shared with omp-tab.sh, on purpose: the state file and its row format
-# (`WID PID @LAUNCHER TITLE`), so `omp-tab.sh --list` shows these tabs and
-# `--close` refuses a window neither launched; the one-slot gate (#699), since
-# a package tab is a package tab whichever agent runs in it; and the
-# `brief:<basename>` claim in agent-config's task-claim.mjs.
+# Shared with claude-tab.sh through lib/tab-ledger.sh, on purpose: the state
+# file and its row format (`WID PID @LAUNCHER TITLE`), so `--list` shows both
+# launchers' tabs and `--close` refuses a window neither launched; the
+# one-slot gate (#699), since a package tab is a package tab whichever agent
+# runs in it; and the `brief:<basename>` claim in agent-config's task-claim.mjs.
 #
 # The probe runs in a throwaway directory, so the session row it leaves in
 # opencode's store names that directory and can never be taken for the tab's
@@ -54,23 +53,17 @@
 #
 # Test seams: OPENCODE_TAB_LAUNCH (the command the tab execs),
 # OPENCODE_TAB_DB (the opencode store), OPENCODE_TAB_PRESENCE (a command that
-# prints {"beacons":[...]} in place of the presence lib), OMP_TAB_TASK_CLAIM
-# (as omp-tab.sh).
+# prints {"beacons":[...]} in place of the presence lib), SWITCHBOARD_TASK_CLAIM
+# (lib/tab-ledger.sh).
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE="${XDG_RUNTIME_DIR:-/tmp}/omp-tab-launched.$(id -u)"
 
 die()  { printf '%s\n' "opencode-tab: $1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "opencode-tab: $*" >&2; }
-kitty_up() { kitty @ ls >/dev/null 2>&1; }
-
-config_root() {
-  if [ -n "${AGENT_CONFIG_HOME:-}" ]; then printf '%s' "$AGENT_CONFIG_HOME"
-  elif [ -d "$HOME/agent-config" ]; then printf '%s' "$HOME/agent-config"
-  else printf '%s' "$HOME/.claude"; fi
-}
+# STATE, kitty_up, config_root, claim_cli, win_pid, tab_ledger_list/close.
+. "$HERE/../lib/tab-ledger.sh"
 LAUNCH="${OPENCODE_TAB_LAUNCH:-$(config_root)/scripts/opencode-launch.sh}"
 DB="${OPENCODE_TAB_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}"
 PRESENCE_LIB="$HERE/../lib/presence.mjs"
@@ -85,33 +78,21 @@ presence_json() {
   ' "$PRESENCE_LIB"
 }
 PROBE_TIMEOUT="${OPENCODE_TAB_PROBE_TIMEOUT:-60}"
-CLAIM_CLI="${OMP_TAB_TASK_CLAIM:-$(config_root)/scripts/task-claim.mjs}"
-claim_cli() {
-  [ -r "$CLAIM_CLI" ] || { note "task-claim CLI not found at $CLAIM_CLI — brief claims skipped"; return 0; }
-  node "$CLAIM_CLI" "$@"
-}
-
-# WINDOW id -> its pid, over windows only (kitty's tab and window ids overlap).
-win_pid() {
-  kitty @ ls 2>/dev/null \
-    | jq -r --argjson id "$1" '.[].tabs[].windows[] | select(.id == $id) | .pid' 2>/dev/null \
-    | head -1
-}
 
 case "${1:-}" in
   --help|-h) sed -n '/^# HELP-BEGIN$/,/^# HELP-END$/p' "$0" | sed -e '1d;$d' -e 's/^# \?//'; exit 0 ;;
-  --list) exec "$HERE/omp-tab.sh" "$@" ;;
+  --list) tab_ledger_list; exit $? ;;
   --close)
-    # omp-tab.sh owns the refusal (a window it did not launch, a reused id).
+    # tab_ledger_close owns the refusal (a window no launcher recorded, a reused id).
     # After a close it made, drop the beacons naming that window: opencode's
     # plugin never sees the SIGHUP a closed window sends (its exit and signal
     # handlers did not run, measured 2026-09-27), so the beacon would
     # otherwise outlive the tab by the 20-minute presence TTL. A window
     # closed by hand needs no beacon release: the plugin records its pid on
     # the beacon and readers skip a dead one (lib/presence.mjs,
-    # agent-config#979). Its brief claim is released by omp-tab.sh, on --close
+    # agent-config#979). Its brief claim is released by tab_ledger_close, on --close
     # or on the --list prune that finds it gone (agent-config#994).
-    "$HERE/omp-tab.sh" "$@" || exit $?
+    ( tab_ledger_close "${2:-}" ) || exit $?
     node --input-type=module -e '
       const { readAllPresence, releasePresence } = await import(process.argv[1]);
       const w = Number(process.argv[2]);
@@ -141,7 +122,7 @@ case "$MODEL" in */*) ;; *) die "--model takes PROVIDER/NAME, got: $MODEL" ;; es
 [ -n "$BRIEF" ] || die "--brief is required"
 case "$BRIEF" in /*) ;; *) die "--brief must be absolute (it resolves against the tab's cwd): $BRIEF" ;; esac
 [ -r "$BRIEF" ] || die "--brief not readable: $BRIEF"
-# The brief lint omp-tab.sh runs, less its 768-byte line cap: the brief goes in
+# The shared brief lint (lib/brief-lint.sh), without a per-line byte cap: the brief goes in
 # as --prompt here, and opencode does not cut a line.
 . "$HERE/../lib/brief-lint.sh"
 PLACEHOLDERS=$(brief_placeholder_lines "$BRIEF")
@@ -162,7 +143,7 @@ LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
 [ -n "$LAUNCHER" ] || LAUNCHER=unknown
 
-# The one-slot gate (#699), the same test as omp-tab.sh's slot_holders: a live
+# The one-slot gate (#699), the same test as claude-tab.sh's: a live
 # row (id present, pid unchanged) whose launcher is not this one and which is
 # not the caller's own window.
 # True when PID is this script or one of its ancestors: the seat that runs

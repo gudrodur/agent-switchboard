@@ -1,5 +1,5 @@
 # Claude Code's own session state, for a kitty window running `claude`.
-# Sourced by bin/kitty-send.sh and bin/omp-tab-state.sh; defines functions only.
+# Sourced by bin/kitty-send.sh and bin/tab-state.sh; defines functions only.
 #
 # The `claude` process writes <config>/sessions/<pid>.json (sessionId, cwd,
 # startedAt and statusUpdatedAt in epoch ms, status busy|idle) and every turn

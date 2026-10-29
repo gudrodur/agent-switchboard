@@ -1,31 +1,24 @@
 #!/usr/bin/env bash
 # Send a message into another kitty window (a running agent, a REPL, a shell) and
-# PROVE it arrived. Use it to steer a tab that is already running; `omp-tab.sh`
-# is what LAUNCHES one and sends it its opening brief.
+# PROVE it arrived. Use it to steer a tab that is already running; the
+# `*-tab.sh` launchers are what LAUNCH one.
 # `bin/agent-send.mjs` is the sender now; this file is the fallback it reaches for when the recipient window has no mailbox consumer.
 #
-# omp-tab.sh calls this file rather than reimplementing it,
-# so the \r rule below exists once. It keeps a SEPARATE gate of its own, and the
-# distinction is the point: this file proves the TEXT ARRIVED, omp-tab.sh then
-# proves the agent STARTED WORKING on it. A tab can do the first and not the
-# second.
-
-# PROOF BY STATE FIRST. An omp tab writes every turn to
-# a session jsonl file on disk, and omp-tab-state.sh links this window to
-# that file. After the send this script polls that file for a NEW role:user
-# message row past the pre-send line count: that row is the tab receiving
-# the text, which no screen rendering can hide, wrap or scroll away. Nine
-# retro rows in eight sessions (09-04 to 09-09) were the echo proof failing
-# exactly that way, and eight single-case fixes each closed one shape while
-# the class recurred. An OpenCode tab (v2.0.29+) has no jsonl: its receipt is a
-# NEW type:user row in opencode.db's session_message past the pre-send MAX(seq),
-# carrying the text — the same proof against its own store (see
-# opencode_row_landed). The echo proof below (tail or head fragment newly on
-# screen) runs only when the window has no session file to read — not an
-# omp tab, or the pty link is unproven — and its verdict is exit 10
-# ("typed, not proven submitted"), never "delivered".
+# PROOF BY STATE FIRST. A Claude Code tab writes every turn to a transcript
+# jsonl on disk and tab-state.sh links this window to it. After the send this
+# script polls that file for a NEW user row past the pre-send line count that
+# carries the text: that row is the tab receiving it, which no screen
+# rendering can hide, wrap or scroll away. Nine retro rows in eight sessions
+# (09-04 to 09-09) were the echo proof failing exactly that way, and eight
+# single-case fixes each closed one shape while the class recurred. An
+# OpenCode tab (v2.0.29+) has no jsonl: its receipt is a NEW type:user row in
+# opencode.db's session_message past the pre-send MAX(seq), carrying the text
+# (see opencode_row_landed). The echo proof below (tail or head fragment newly
+# on screen) runs only when the window has neither record, or the link is
+# unproven, and its verdict is exit 10 ("typed, not proven submitted"), never
+# "delivered".
 # Exit codes:
-#   0  sent AND proven: a new role:user row in the tab's session file, for a
+#   0  sent AND proven: for a
 #      Claude Code tab a new user row carrying the text in its transcript, or
 #      for an OpenCode tab a new type:user row in its opencode.db session
 #      (the only proofs that name the tab receiving the text)
@@ -38,8 +31,8 @@
 #   7  the target is mid-turn and none of --wait-idle / --queue / --now was
 #      given — NOTHING WAS SENT (the discard below is opt-in, never a default)
 #   8  sent while the target was mid-turn (--now) and it is STILL mid-turn:
-#      the message is pending in its steering queue — no role:user row can
-#      reach the session file until the tool boundary. Truthful, not proven;
+#      the message is pending in its steering queue — no new user row can
+#      reach the session record until the tool boundary. Truthful, not proven;
 #      like exit 3 it must never invite a resend
 #   9  the target's composer already holds an unsubmitted paste chip that is
 #      NOT kitty-send's own leftover — NOTHING WAS SENT (it may be a human's
@@ -48,7 +41,7 @@
 #   delivery verdict (any code above) lands later in the queue log. A caller
 #   that needs the verdict must use --wait-idle N, which runs in the
 #   foreground (agent-send does, on its withdraw path; agent-config#1310).
-#   10 typed, not proven submitted: the window has no session file to read,
+#   10 typed, not proven submitted: the window has no session record to read,
 #      so the only proof is the screen. The text reached the window (it
 #      echoed, or the screen changed on it) but nothing proves the target
 #      submitted it — a composer echoes unsubmitted text too (measured
@@ -57,12 +50,12 @@
 #      "delivered", and never resend blind: the text may already sit in the
 #      composer.
 #
-# A composer echo is NOT delivery. The host agent's
+# A composer echo is NOT delivery. An agent TUI's
 # composer collapses a send-text burst into a `[Pasted text #N +M lines]` chip
 # and swallows the trailing \r inside it, so the text sits in the text box
 # and the agent never sees it — while the fragment match would call it
-# "echoed at the prompt". So in the no-session-file branch only (an omp tab
-# proves by session row and never takes this path): a `[Pastedtext#` chip on
+# "echoed at the prompt". So in the no-session-record branch only (a tab
+# with a record proves by its row and never takes this path): a `[Pastedtext#` chip on
 # the squashed screen after the send means NOT DELIVERED whatever the fragment
 # match says — one Enter is pressed, at most once per send, and only a chip
 # gone AND the fragment echoed confirms. A chip on screen BEFORE the send
@@ -82,14 +75,14 @@
 #   * Sending the text and the carriage return as TWO calls is worse than either:
 #     in an agent TUI with a steering queue the second call enqueues an EMPTY
 #     message, and the agent then blocks every tool call waiting for an advisory
-#     that never arrives. Measured 2026-09-02 on an omp tab: ~20 minutes and
+#     that never arrives. Measured 2026-09-02 on an agent tab: ~20 minutes and
 #     ~$0.20 burned in a retry loop, zero work done, caused by exactly this.
 #     The text and the \r go in ONE call. That is the whole rule.
 #   * A SELECTION DIALOG eats the keystrokes. When the target's TUI is showing
-#     its ask-the-user widget (omp: "Enter select · n note · ↑/↓ move · Esc
+#     its ask-the-user widget ("Enter select · n note · ↑/↓ move · Esc
 #     cancel"), send-text does not type into a prompt at all: every character
 #     is a hotkey, and the \r is Enter on whatever option is highlighted.
-#     Measured 2026-09-03 on an omp tab: the message contained an `n`, which
+#     Measured 2026-09-03 on an agent tab: the message contained an `n`, which
 #     opened the note field; the rest of the text went into that note,
 #     truncated at the field's width; the \r closed the note; and when the
 #     human later answered the dialog, the agent received a mangled file path
@@ -121,10 +114,10 @@
 # with `--now`, which accepts the discard in the command line where the next
 # reader can see it.
 #
-# Title convention this relies on, measured on omp 2026-09-03: the window title
-# starts "π ⠹ …" while a turn is running (a braille spinner, U+2800–U+28FF),
-# "π > …" at an idle prompt, and "π ! …" while a dialog waits for the human.
-# The spinner is what "busy" means here; the dialog is read off the screen.
+# Title convention this relies on, measured 2026-09-03: a window title carries
+# a braille spinner (U+2800–U+28FF) while a turn is running. The spinner is
+# what "busy" means here for a tab with no state record; the dialog is read
+# off the screen.
 #
 # The spinner cannot tell WORKING from WAITING, and the difference matters: an
 # agent looping on a `sleep`+poll (watching CI, waiting to be told what is next)
@@ -135,12 +128,12 @@
 # cancelled and re-sent with --now.
 #
 # `--idle-when REGEX` is the escape, and the pattern is the CALLER'S to supply
-# rather than a marker list in here. That is not laziness: omp prints no stable
-# waiting-state string to key on (measured 2026-09-07, `strings` over the
-# launcher finds none) — the line above was the delegated agent's own prose, in
-# Icelandic, because its brief was written that way. A list of markers would
-# only ever match the briefs that happened to be written first. DIALOG_MARKERS
-# below can be a fixed list because a dialog IS omp's own widget.
+# rather than a marker list in here. That is not laziness: an agent TUI prints
+# no stable waiting-state string to key on (measured 2026-09-07) — the line
+# above was the delegated agent's own prose, in Icelandic, because its brief
+# was written that way. A list of markers would only ever match the briefs
+# that happened to be written first. DIALOG_MARKERS below can be a fixed list
+# because a dialog IS the TUI's own widget.
 #
 # Multi-line input is refused rather than guessed at: inside single quotes a
 # backslash-newline is a literal backslash, and an embedded newline submits a
@@ -154,16 +147,16 @@
 set -euo pipefail
 
 # $1 is the message, $2 the exit code. Using "$*" here would print the code as
-# part of the message ("... try --list) 1"), which omp-tab.sh's copy still does.
+# part of the message ("... try --list) 1").
 die()  { printf '%s\n' "kitty-send: $1" >&2; exit "${2:-1}"; }
 note() { [ "${QUIET:-0}" = 1 ] || printf '%s\n' "kitty-send: $*" >&2; }
 # The sibling that owns proof by state. Resolved from this file rather than
 # $PATH so a copy of the pair in another directory keeps working; absent or
 # failing, every state read below is "unknown" and the spinner decides.
-STATE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/omp-tab-state.sh"
+STATE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tab-state.sh"
 # The OpenCode store (v2.0.29+), the one proof source an OpenCode tab has: it
 # writes no jsonl and no Claude transcript, only rows in SQLite. Same seam name
-# omp-tab-state.sh and opencode-tab.sh use.
+# tab-state.sh and opencode-tab.sh use.
 OPENCODE_TAB_DB="${OPENCODE_TAB_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}"
 # One of busy|idle|exited|unknown. Anything the state script cannot answer —
 # no such window, no session file, unreadable file — is unknown, never fatal
@@ -181,8 +174,8 @@ tab_state_json() { # $1 = window id
 }
 
 # CLAUDE CODE TABS (#38). The session record and transcript readers live in
-# lib/claude-session.sh, shared with omp-tab-state.sh. A Claude tab is proved
-# the way an omp tab is: a NEW user row in its transcript, past the pre-send
+# lib/claude-session.sh, shared with tab-state.sh. A Claude tab is proved
+# by a NEW user row in its transcript, past the pre-send
 # line count, carrying the start of this message. Its title is no help: it
 # reads "✳ …" idle and "◐ …" busy, no braille spinner, so the status field is
 # what the busy gate reads for it.
@@ -331,7 +324,7 @@ title_busy() {
 }
 
 # Dialog = the footer/markers of an ask-the-user widget on the visible screen.
-# The markers are omp's today; add a TUI's own footer text here when it shows
+# The markers are today's; add a TUI's own footer text here when it shows
 # one, rather than teaching a caller to know. Bottom 15 rows only: a dialog
 # that was answered stays in the scrollback in full, and that must not count.
 DIALOG_MARKERS='Enter select|Esc cancel|↑/↓ move|✎ note'
@@ -359,8 +352,8 @@ steerable_screen() {
 # --idle-when is the caller's own parked proof and wins over every other
 # busy signal, state included (its purpose is a tab that spins while waiting
 # for input). A tab the state file says is idle is idle regardless of the
-# spinner; an exited tab dies here, exit 1, naming it. Unknown (no session
-# file: not an omp tab, or the pty link is unproven) keeps the existing
+# spinner; Unknown (no session
+# file: or the link is unproven) keeps the existing
 # spinner logic, which is the weaker proof. Kept as one function so the wait
 # loop and the exit-7 precheck cannot drift apart.
 target_busy() {  # $1 = title, $2 = window id
@@ -368,7 +361,6 @@ target_busy() {  # $1 = title, $2 = window id
   case "$(tab_state_of "$2")" in
     busy) return 0 ;;
     idle) return 1 ;;
-    exited) die "window $2 has exited (its omp session file ends in session_exit) — nothing was sent" 1 ;;
   esac
   case "$(claude_state_of "$2")" in
     busy) return 0 ;;
@@ -390,8 +382,8 @@ dialog_or_die() {
 
 TO=""; TEXT=""; FILE=""; EXPECT=""; EXPECT_GIVEN=0; TIMEOUT="${KITTY_SEND_TIMEOUT:-20}"; WAIT_IDLE=0; DEADLINE=""; QUIET=0; QUEUE=0; CANCEL=0; NOW=0; IDLE_WHEN=""
 # KITTY_SEND_TIMEOUT overrides the --timeout default (test seam only, so the
-# omp-tab suite can bound the session-row wait without passing a flag through
-# omp-tab.sh; production never sets it).
+# suites can bound the session-row wait without passing a flag through;
+# production never sets it).
 
 # Queued sends live under the per-user runtime dir: one pid file and one log
 # per target window, so --cancel can name exactly the waiter it kills.
@@ -465,9 +457,9 @@ if [ -n "$FILE" ]; then
   [ -f "$FILE" ] || die "no such file: $FILE"
   # Attributed and descriptive on purpose. The earlier shape ("carry it out in
   # full. Run the commands rather than reasoning about them") is the right
-  # opening for a LAUNCH brief, and omp-tab.sh still sends it for that; as a
+  # opening for a LAUNCH brief; as a
   # mid-run steer from a path the agent has never seen it is the textbook shape
-  # of a prompt injection, and on 2026-09-03 an omp agent said so and refused.
+  # of a prompt injection, and on 2026-09-03 an agent said so and refused.
   # A note that says who wrote it and what it is gets read.
   TEXT="Note from ${AGENT_SWITCHBOARD_SENDER:-another agent session}: read $FILE, a note written for you, and act on what it says."
   TEXT="$TEXT Use absolute paths and 'git -C <dir> ...'; do NOT rely on 'cd'."
@@ -656,9 +648,9 @@ if title_busy "$title" || [ "$(tab_state_of "$WID")" = busy ] || [ "$(claude_sta
 # the weaker proof — its verdict says so.
 TAB_SESSION=""; TAB_LINES=0; STATE_KNOWN=0
 OPENCODE_TAB=0; OPENCODE_SID=""; OPENCODE_HEAD=""
-# A Claude Code tab (see CLAUDE CODE TABS above) is asked first: omp-tab-state
+# A Claude Code tab (see CLAUDE CODE TABS above) is asked first: tab-state
 # reports its status too, but the send proof below needs CLAUDE_TAB, which the
-# omp-shaped branch does not set. Its transcript may not exist yet in a fresh
+# state branch does not set. Its transcript may not exist yet in a fresh
 # session, which writes it with the first prompt: that is line count 0, not
 # unknown.
 CLAUDE_TAB=0; CLAUDE_HEAD=""
@@ -683,7 +675,7 @@ if [ "$CLAUDE_TAB" = 0 ] && state_json=$(tab_state_json "$WID"); then
         OPENCODE_TAB=1; OPENCODE_SID="${TAB_SESSION#opencode:}"; STATE_KNOWN=1
         OPENCODE_HEAD=$(printf '%s' "$TEXT" | cut -c1-40 | tr -d '[:space:]')
         ;;
-      *) if [ -n "$TAB_SESSION" ] && [ -f "$TAB_SESSION" ]; then STATE_KNOWN=1; fi ;;
+      *) : ;;  # no other tab kind has a record to prove a send by
     esac
   fi
 fi
@@ -730,7 +722,7 @@ CLAUDE_ENTER_AFTER="${KITTY_SEND_CLAUDE_ENTER_AFTER:-3}"
 # The comparison STRIPS ALL WHITESPACE from both sides, and that is the whole
 # trick. The target wraps a long line at its own width, so `get-text` returns the
 # message broken across rows at a column that has nothing to do with word
-# boundaries. Measured 2026-09-02 on a 108-column omp tab: the message arrived,
+# boundaries. Measured 2026-09-02 on a 108-column agent tab: the message arrived,
 # the agent acknowledged it by name, and a literal `grep -F` on the last 40
 # characters still failed, because the fragment spanned a wrap. Reporting "not
 # delivered" for a delivery that worked is the one wrong answer here — it invites
@@ -759,7 +751,7 @@ CLAUDE_ENTER_AFTER="${KITTY_SEND_CLAUDE_ENTER_AFTER:-3}"
 # confirms when it was not there a moment ago.
 
 # A SLASH COMMAND is the third way a delivery can be real with no fragment on
-# screen. Sent to an omp prompt, `/mcp reauth Neon` never echoes: the command's
+# screen. Sent to an agent prompt, `/mcp reauth Neon` never echoes: the command's
 # effect REPLACES its echo — the screen read "Waiting for browser
 # authentication..." while the fragment match failed, and the script reported
 # exit 3 for a delivery that landed (2026-09-07). A tail/head
@@ -808,7 +800,7 @@ else
 fi
 if [ "$STATE_KNOWN" = 0 ] && printf '%s' "$before_screen" | grep -qF -- '[Pastedtext#'; then
 # A chip on screen BEFORE the send means the composer is dirty: send-text
-# would concatenate onto whatever is already in it. Only in the no-session-file branch — an omp tab proves by session
+# would concatenate onto whatever is already in it. Only in the no-session-record branch — a tab with a record proves by its
 # row and never takes this path. With kitty-send's own stranded record for
 # this window the leftover is recovered (Enter, wait for clear, drop the
 # record, then send); without one it may be a human's draft, so nothing is
@@ -899,8 +891,6 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       if claude_row_landed; then
         confirmed=1; where="proved by transcript row (a new user prompt with this text reached the Claude Code session's transcript)"; break
       fi
-    elif tail -n "+$((TAB_LINES + 1))" "$TAB_SESSION" 2>/dev/null | grep -q '"role":"user"'; then
-      confirmed=1; where="proved by session row (a new role:user message reached the tab's session file)"; break
     fi
     # One more lone \r, at most, if the transcript still shows no prompt:
     # a composer that swallowed the first. An Enter in an empty Claude Code
@@ -1046,8 +1036,6 @@ if [ "$CLAUDE_TAB" = 1 ]; then
 elif [ "$OPENCODE_TAB" = 1 ]; then
   note "sent to window $WID (an OpenCode tab), but no new type:user row with this text reached session $OPENCODE_SID's rows in opencode.db within ${TIMEOUT}s (was seq $TAB_LINES)."
   note "The text may still sit in its composer: look at the window before sending again."
-elif [ "$STATE_KNOWN" = 1 ]; then
-  note "sent to window $WID but no new role:user row reached its session file within ${TIMEOUT}s ($TAB_SESSION, was $TAB_LINES lines)."
 else
   note "sent to window $WID but could not observe it on screen within ${TIMEOUT}s."
 fi

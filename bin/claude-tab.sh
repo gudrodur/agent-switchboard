@@ -12,7 +12,7 @@
 #                 [--brief /abs/brief.md] [--cwd /abs/repo]
 #   claude-tab.sh --resume <session-id> --title "claude: <name>" --model ...
 #                 [--rc [NAME]] [--brief /abs/brief.md]
-#   claude-tab.sh --list | --close <window-id>       (omp-tab.sh's, on the same state file)
+#   claude-tab.sh --list | --close <window-id>       (lib/tab-ledger.sh, shared with opencode-tab.sh)
 #   claude-tab.sh --help | -h
 #
 #   --rc [NAME]  start the session with Remote Control on, named NAME (default:
@@ -42,7 +42,7 @@
 # not trusted: make it under a trusted tree, e.g. mktemp -d ~/Development/.x-XXXX.
 # --dangerously-skip-permissions does not skip the trust prompt (2026-09-29).
 #
-# Exit codes, the same table as omp-tab.sh:
+# Exit codes, the same table as opencode-tab.sh:
 #   0  launched AND proven: a new Claude Code session file in --cwd whose first
 #      assistant turn ran on --model (and, with --rc, a bridge-session row);
 #      with --resume, the rows past the pre-launch offset, as above
@@ -60,51 +60,34 @@
 # when Remote Control is on. A file that was not there before the launch is
 # the tab's; nothing is read off the screen.
 #
-# Shared with omp-tab.sh and opencode-tab.sh, on purpose: the state file and
-# its row format (`WID PID @LAUNCHER TITLE`), so `omp-tab.sh --list` shows
+# Shared with opencode-tab.sh through lib/tab-ledger.sh, on purpose: the state
+# file and its row format (`WID PID @LAUNCHER TITLE`), so `--list` shows
 # these tabs and `--close` refuses a window none of them launched; the
 # one-slot gate (#699); and the `brief:<basename>` claim in agent-config's
 # task-claim.mjs.
 #
 # Test seams: CLAUDE_TAB_BIN (the command the tab execs), CLAUDE_TAB_PROJECTS
 # (the transcripts root), CLAUDE_TAB_CONFIG (the .claude.json holding folder
-# trust), OMP_TAB_TASK_CLAIM (as omp-tab.sh).
+# trust), SWITCHBOARD_TASK_CLAIM (lib/tab-ledger.sh).
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE="${XDG_RUNTIME_DIR:-/tmp}/omp-tab-launched.$(id -u)"
 
 die()  { printf '%s\n' "claude-tab: $1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "claude-tab: $*" >&2; }
-kitty_up() { kitty @ ls >/dev/null 2>&1; }
-
-config_root() {
-  if [ -n "${AGENT_CONFIG_HOME:-}" ]; then printf '%s' "$AGENT_CONFIG_HOME"
-  elif [ -d "$HOME/agent-config" ]; then printf '%s' "$HOME/agent-config"
-  else printf '%s' "$HOME/.claude"; fi
-}
+# STATE, kitty_up, config_root, claim_cli, win_pid, tab_ledger_list/close.
+. "$HERE/../lib/tab-ledger.sh"
 CLAUDE_BIN="${CLAUDE_TAB_BIN:-claude}"
 PROJECTS="${CLAUDE_TAB_PROJECTS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 CLAUDE_JSON="${CLAUDE_TAB_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json}"
-CLAIM_CLI="${OMP_TAB_TASK_CLAIM:-$(config_root)/scripts/task-claim.mjs}"
-claim_cli() {
-  [ -r "$CLAIM_CLI" ] || { note "task-claim CLI not found at $CLAIM_CLI — brief claims skipped"; return 0; }
-  node "$CLAIM_CLI" "$@"
-}
-
-# WINDOW id -> its pid, over windows only (kitty's tab and window ids overlap).
-win_pid() {
-  kitty @ ls 2>/dev/null \
-    | jq -r --argjson id "$1" '.[].tabs[].windows[] | select(.id == $id) | .pid' 2>/dev/null \
-    | head -1
-}
 
 case "${1:-}" in
   --help|-h) sed -n '/^# HELP-BEGIN$/,/^# HELP-END$/p' "$0" | sed -e '1d;$d' -e 's/^# \?//'; exit 0 ;;
-  # omp-tab.sh owns --list and --close, including the refusal of a window it
-  # did not launch and the release of the window's brief claim.
-  --list|--close) exec "$HERE/omp-tab.sh" "$@" ;;
+  # lib/tab-ledger.sh owns --list and --close, including the refusal of a
+  # window no launcher recorded and the release of the window's brief claim.
+  --list) tab_ledger_list; exit $? ;;
+  --close) tab_ledger_close "${2:-}"; exit $? ;;
 esac
 
 TITLE=""; BRIEF=""; OUT=""; MODEL=""; CWD="$PWD"; CWD_SET=0; SLOT_OVERRIDE=""; RC=0; RC_NAME=""; SEAT=0; RESUME=""; ROLE=""
@@ -147,7 +130,7 @@ fi
 if [ -n "$BRIEF" ]; then
   case "$BRIEF" in /*) ;; *) die "--brief must be absolute (it resolves against the tab's cwd): $BRIEF" ;; esac
   [ -r "$BRIEF" ] || die "--brief not readable: $BRIEF"
-  # The brief lint omp-tab.sh runs, less its 768-byte line cap: the brief goes in
+  # The shared brief lint (lib/brief-lint.sh), without a per-line byte cap: the brief goes in
   # as the initial prompt here, and Claude Code does not cut a line.
   . "$HERE/../lib/brief-lint.sh"
   PLACEHOLDERS=$(brief_placeholder_lines "$BRIEF")
@@ -205,7 +188,7 @@ LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
 [ -n "$LAUNCHER" ] || LAUNCHER=unknown
 
-# The one-slot gate (#699), the same test as omp-tab.sh's slot_holders: a live
+# The one-slot gate (#699), the same test as opencode-tab.sh's: a live
 # row (id present, pid unchanged) whose launcher is not this one and which is
 # not the caller's own window.
 # True when PID is this script or one of its ancestors: the seat that runs
