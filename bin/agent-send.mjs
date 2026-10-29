@@ -69,7 +69,7 @@ import {
   waitForAck,
 } from '../lib/agent-mailbox.mjs';
 import { switchboardDir } from '../lib/presence.mjs';
-import { claimRole, validateRoleName, withRolesDb } from '../lib/seat-roles.mjs';
+import { claimRole, releaseRole, validateRoleName, withRolesDb } from '../lib/seat-roles.mjs';
 
 const die = (msg, code = 1) => {
   process.stderr.write(`agent-send: ${msg}\n`);
@@ -81,6 +81,7 @@ const usage = () => `Usage:
   agent-send.mjs --read [--as <session-id>]
   agent-send.mjs --cancel --to <mailbox-key> --id <row-id>
   agent-send.mjs --claim-role <name> [--take-over] [--as <session-id>]
+  agent-send.mjs --release-role <name> [--as <session-id>]
   agent-send.mjs --who [--json]
 
   --now         priority now (default when no mode is given)
@@ -112,6 +113,9 @@ const usage = () => `Usage:
                 A dead or absent holder is taken without the flag.
   --take-over   with --claim-role: take the role from a live holder and queue
                 a mailbox row to the displaced session saying so
+  --release-role  give up a role this session holds, e.g. a placeholder
+                claimed before the real one; mail to it then waits for the
+                next holder. Not held: exit 0. Held by another session: exit 12
   --who         list seats: window, session, cwd, repo, branch, roles, kitty
                 window title; a seat past the presence window whose process
                 and kitty window are still alive is listed as "idle <N>m";
@@ -144,6 +148,7 @@ const usage = () => `Usage:
         5 idle wait ran out, 6 a send is already queued, 7 mid-turn without
         --now/--queue/--wait-idle, 9 composer holds unsubmitted text
     11  --claim-role refused: the role's holder is live (nothing changed)
+    12  --release-role refused: another session holds the role (nothing changed)
     any other code is unexpected: treat the message as not delivered, and look
     at the tab before resending
 `;
@@ -232,6 +237,7 @@ const main = (argv) => {
   let rowId = null;
   let claimRoleName = null;
   let takeOver = false;
+  let releaseRoleName = null;
   let who = false;
   let json = false;
   const rest = [...argv];
@@ -267,6 +273,7 @@ const main = (argv) => {
     else if (a === '--id') rowId = need('--id');
     else if (a === '--claim-role') claimRoleName = need('--claim-role');
     else if (a === '--take-over') takeOver = true;
+    else if (a === '--release-role') releaseRoleName = need('--release-role');
     else if (a === '--who') who = true;
     else if (a === '--json') json = true;
     else if (a === '--help' || a === '-h') {
@@ -296,7 +303,7 @@ const main = (argv) => {
   if (json && !who) die('--json goes with --who');
   if (takeOver && claimRoleName == null) die('--take-over goes with --claim-role');
   if (who) {
-    if (to != null || text != null || file != null || mode != null || cancel || claimRoleName != null) die('--who takes only --json');
+    if (to != null || text != null || file != null || mode != null || cancel || claimRoleName != null || releaseRoleName != null) die('--who takes only --json');
     const seats = listSeats();
     if (json) process.stdout.write(`${JSON.stringify(seats, null, 2)}\n`);
     else {
@@ -308,6 +315,19 @@ const main = (argv) => {
       const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
       for (const r of [head, ...rows]) process.stdout.write(`${r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd()}\n`);
     }
+    process.exit(0);
+  }
+  if (releaseRoleName != null) {
+    if (to != null || text != null || file != null || mode != null || cancel || claimRoleName != null || takeOver) die('--release-role takes only --as');
+    try { validateRoleName(releaseRoleName); } catch (e) { die(e.message); }
+    const sessionId = asSession ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
+    if (sessionId == null) die('--release-role needs --as <session-id> outside a host-agent session');
+    const outcome = withRolesDb((db) => releaseRole(db, { role: releaseRoleName, sessionId }));
+    if (outcome.holder) {
+      const h = outcome.holder;
+      die(`role ${releaseRoleName} is held by session ${h.session_id}${h.window_id ? ` (window ${h.window_id})` : ''}, not this one; it was not released`, 12);
+    }
+    process.stderr.write(`agent-send: ${outcome.released ? `${sessionId} released role ${releaseRoleName}` : `role ${releaseRoleName} was not held; nothing to release`}\n`);
     process.exit(0);
   }
   if (claimRoleName != null) {
