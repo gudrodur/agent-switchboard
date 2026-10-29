@@ -79,7 +79,7 @@ const usage = () => `Usage:
   agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text LINE | --file /abs/path)
                  [--now | --stop | --idle-when REGEX | --queue] [--deadline N] [--topic SLUG [--topic-window MIN] [--force-topic]]
   agent-send.mjs --read [--as <session-id>]
-  agent-send.mjs --cancel --to <mailbox-key> --id <row-id>
+  agent-send.mjs --cancel --id <row-id> [--to <mailbox-key>]
   agent-send.mjs --claim-role <name> [--take-over] [--as <session-id>]
   agent-send.mjs --release-role <name> [--as <session-id>]
   agent-send.mjs --who [--json]
@@ -101,7 +101,9 @@ const usage = () => `Usage:
                 exits 0. --force-topic or --topic-window 0 sends anyway.
   --read        print this session's unacked inbox rows and ack them (inbox read;
                 the session is CLAUDE_CODE_SESSION_ID unless --as names it)
-  --cancel      withdraw one queued row so a later drain cannot deliver it
+  --cancel      withdraw one queued row so a later drain cannot deliver it. --id
+                is enough: the row's own recipient is used, whatever --to says
+                (exit 13: already delivered or withdrawn, 14: no such row)
   --to role:<name>  address a seat role instead of a window: it follows the
                 session holding the role, and with no live holder the message
                 is queued for the next holder (exit 3)
@@ -149,6 +151,8 @@ const usage = () => `Usage:
         --now/--queue/--wait-idle, 9 composer holds unsubmitted text
     11  --claim-role refused: the role's holder is live (nothing changed)
     12  --release-role refused: another session holds the role (nothing changed)
+    13  --cancel found the row already delivered or already withdrawn (nothing written)
+    14  --cancel found no row with that id (nothing written)
     any other code is unexpected: treat the message as not delivered, and look
     at the tab before resending
 `;
@@ -363,11 +367,16 @@ const main = (argv) => {
   }
   // Cancel: withdraw one queued row so a later drain cannot deliver it.
   if (cancel) {
-    if (to == null || rowId == null) die('--cancel needs --to <mailbox-key> and --id <row-id>');
-    if (text != null || file != null || mode != null) die('--cancel takes only --to and --id');
-    cancelQueued({ key: to, id: rowId });
-    process.stderr.write(`agent-send: withdrew ${rowId} in ${mailboxPath(to)}\n`);
-    process.exit(0);
+    if (rowId == null) die('--cancel needs --id <row-id> (--to is optional)');
+    if (text != null || file != null || mode != null) die('--cancel takes only --id and optionally --to');
+    const res = cancelQueued({ key: to, id: rowId });
+    if (res.withdrawn) {
+      process.stderr.write(`agent-send: withdrew ${rowId} (recipient ${res.key})${res.keyCorrected ? ` — --to named ${to}, the row's own recipient was used` : ''}\n`);
+      process.exit(0);
+    }
+    if (res.state === 'delivered') die(`not withdrawn: ${rowId} was already delivered at ${res.ackTs} as ${res.deliveredAs}`, 13);
+    if (res.state === 'withdrawn') die(`not withdrawn: ${rowId} was already withdrawn at ${res.withdrawTs}`, 13);
+    die(`not withdrawn: no row ${rowId}`, 14);
   }
   if (text != null && file != null) die('pass one of --text or --file, not both');
   if (file != null) {
@@ -509,7 +518,7 @@ const main = (argv) => {
   if (recipient.queuedForRole) {
     const qfrom = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
     const qrow = appendMessage({ to: recipient.key, from: qfrom, priority, text, topic });
-    process.stderr.write(`agent-send: queued for role ${recipient.role}; no live holder${recipient.holderSessionId ? ` (last holder ${recipient.holderSessionId} is gone)` : ''}. Row ${qrow.id} in ${mailboxPath(recipient.key)}; the next session that claims the role receives it (exit 3: not delivered yet, do not resend; withdraw with --cancel --to ${recipient.key} --id ${qrow.id})\n`);
+    process.stderr.write(`agent-send: queued for role ${recipient.role}; no live holder${recipient.holderSessionId ? ` (last holder ${recipient.holderSessionId} is gone)` : ''}. Row ${qrow.id} in ${mailboxPath(recipient.key)}; the next session that claims the role receives it (exit 3: not delivered yet, do not resend; withdraw with --cancel --id ${qrow.id})\n`);
     process.exit(3);
   }
   if (!recipient.hasConsumer) {
@@ -519,7 +528,7 @@ const main = (argv) => {
   const from = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
   const row = appendMessage({ to: recipient.key, from, priority, text, topic });
   const mbox = mailboxPath(recipient.key);
-  process.stderr.write(`agent-send: queued ${row.id} in ${mbox}\n`);
+  process.stderr.write(`agent-send: queued ${row.id} for ${recipient.key} in ${mbox}; withdraw with --cancel --id ${row.id}\n`);
   // Row 58: a Claude Code consumer drains its mailbox only on
   // UserPromptSubmit, so an IDLE recipient cannot ack — waiting the full
   // 120 s is pure latency before the kitty fallback (measured 2026-09-15,
@@ -567,7 +576,7 @@ const main = (argv) => {
   // the row stays queued for the consumer's next tool boundary.
   const target = recipient.windowId ?? recipient.beaconWindowId ?? (/__/.test(to) || recipient.role != null ? null : to);
   if (target == null) {
-    process.stderr.write(`agent-send: queued, recipient busy/parked for ${row.id} in ${mbox}; no kitty window for ${to}, so the row stays queued for the consumer's next tool boundary (exit 3: not delivered yet, do not resend; withdraw it with --cancel --to ${recipient.key} --id ${row.id}, or re-send with --to <window-id>)\n`);
+    process.stderr.write(`agent-send: queued, recipient busy/parked for ${row.id} in ${mbox}; no kitty window for ${to}, so the row stays queued for the consumer's next tool boundary (exit 3: not delivered yet, do not resend; withdraw it with --cancel --id ${row.id}, or re-send with --to <window-id>)\n`);
     process.exit(3);
   }
   // Withdraw, then deliver over kitty. The withdraw is one O_APPEND write

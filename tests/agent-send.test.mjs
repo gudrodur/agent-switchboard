@@ -26,6 +26,7 @@ import {
   ack,
   appendMessage,
   cancelQueued,
+  findRow,
   DELIVERED_AS,
   findRecentTopicDelivery,
   mailboxPath,
@@ -326,7 +327,7 @@ test('an unacked mailbox key with no known window keeps its row queued and exits
   const left = readUnacked(KEY_S1, { dir: mboxDir });
   assert.equal(left.length, 1, 'the row is still there for the consumer');
   assert.equal(left[0].text, 'parked recipient');
-  assert.match(stderr, new RegExp(`--cancel --to ${KEY_S1} --id ${left[0].id}`));
+  assert.match(stderr, new RegExp(`withdraw it with --cancel --id ${left[0].id}`));
 });
 
 // A withdrawn row whose kitty fallback sends NOTHING (exit 7: mid-turn with
@@ -925,6 +926,93 @@ test('agent-send --cancel withdraws one row by id', async () => {
   assert.match(stderr, new RegExp(row.id));
   assert.deepEqual(readUnacked(key, { dir: mboxDir }), []);
   fs.rmSync(mailboxPath(key, { dir: mboxDir }), { force: true });
+});
+
+// --cancel resolves the row by id and withdraws it under the row's OWN
+// recipient key (agent-config#1379): a caller's --to is a hint, not the address.
+const rowLines = (key) => {
+  try {
+    return fs.readFileSync(mailboxPath(key, { dir: mboxDir }), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch { return []; }
+};
+const runCancel = (args) => {
+  const r = spawnSync('node', [SEND, '--cancel', ...args], { env: childEnv(), encoding: 'utf-8' });
+  return { code: r.status, stderr: r.stderr };
+};
+
+test('--cancel --to <wrong key> --id withdraws under the row\'s real key (file mode)', () => {
+  const key = '-repo-a__realkey';
+  const row = appendMessage({ to: key, priority: 'now', text: 'steer', ...libOpts() });
+  const { code, stderr } = runCancel(['--to', 'role:some-role', '--id', row.id]);
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, new RegExp(`withdrew ${row.id} \\(recipient ${key}\\)`));
+  assert.match(stderr, /--to named role:some-role, the row's own recipient was used/);
+  assert.deepEqual(readUnacked(key, { dir: mboxDir }), []);
+  assert.equal(rowLines(key).filter((r) => r.withdraw === row.id).length, 1);
+  assert.equal(rowLines('role:some-role').length, 0, 'nothing written under the literal --to');
+  fs.rmSync(mailboxPath(key, { dir: mboxDir }), { force: true });
+});
+
+test('--cancel --id alone withdraws (file mode)', () => {
+  const key = '-repo-a__idonly';
+  const row = appendMessage({ to: key, priority: 'now', text: 'steer', ...libOpts() });
+  const { code, stderr } = runCancel(['--id', row.id]);
+  assert.equal(code, 0, stderr);
+  assert.doesNotMatch(stderr, /--to named/);
+  assert.deepEqual(readUnacked(key, { dir: mboxDir }), []);
+  fs.rmSync(mailboxPath(key, { dir: mboxDir }), { force: true });
+});
+
+test('--cancel on a delivered row exits 13, names the ack, writes nothing (file mode)', () => {
+  const key = '-repo-a__delivered';
+  const row = appendMessage({ to: key, priority: 'now', text: 'steer', ...libOpts() });
+  const a = ack({ key, id: row.id, deliveredAs: 'typed', ...libOpts() });
+  const before = rowLines(key).length;
+  const { code, stderr } = runCancel(['--to', key, '--id', row.id]);
+  assert.equal(code, 13);
+  assert.match(stderr, new RegExp(`not withdrawn: ${row.id} was already delivered at ${a.ts} as ${a.deliveredAs}`));
+  assert.equal(rowLines(key).length, before);
+  fs.rmSync(mailboxPath(key, { dir: mboxDir }), { force: true });
+});
+
+test('--cancel on an unknown id exits 14, writes nothing (file mode)', () => {
+  const before = fs.readdirSync(mboxDir).length;
+  const { code, stderr } = runCancel(['--to', '-repo-a__nobody', '--id', 'no-such-id']);
+  assert.equal(code, 14);
+  assert.match(stderr, /not withdrawn: no row no-such-id/);
+  assert.equal(fs.readdirSync(mboxDir).length, before);
+});
+
+test('--cancel on an already-withdrawn row exits 13 and writes no second withdraw (file mode)', () => {
+  const key = '-repo-a__twice';
+  const row = appendMessage({ to: key, priority: 'now', text: 'steer', ...libOpts() });
+  assert.equal(runCancel(['--id', row.id]).code, 0);
+  const { code, stderr } = runCancel(['--id', row.id]);
+  assert.equal(code, 13);
+  assert.match(stderr, /was already withdrawn at \d{4}-/);
+  assert.equal(rowLines(key).filter((r) => r.withdraw === row.id).length, 1);
+  fs.rmSync(mailboxPath(key, { dir: mboxDir }), { force: true });
+});
+
+test('cancelQueued and findRow return the documented shapes (file mode)', () => {
+  const key = '-repo-a__shapes';
+  const row = appendMessage({ to: key, priority: 'now', text: 'steer', ...libOpts() });
+  assert.equal(findRow({ id: row.id, dir: mboxDir }).state, 'queued');
+  const w = cancelQueued({ key: '-other__key', id: row.id, ...libOpts() });
+  assert.deepEqual(w, { withdrawn: true, key, keyCorrected: true });
+  assert.equal(findRow({ id: row.id, dir: mboxDir }).state, 'withdrawn');
+  const again = cancelQueued({ key, id: row.id, ...libOpts() });
+  assert.equal(again.withdrawn, false);
+  assert.equal(again.state, 'withdrawn');
+  assert.ok(again.withdrawTs);
+  const gone = cancelQueued({ key, id: 'nope', ...libOpts() });
+  assert.deepEqual({ w: gone.withdrawn, s: gone.state }, { w: false, s: 'missing' });
+  const k2 = '-repo-a__shapes2';
+  const r2 = appendMessage({ to: k2, priority: 'now', text: 'x', ...libOpts() });
+  const a = ack({ key: k2, id: r2.id, deliveredAs: 'typed', ...libOpts() });
+  const d = cancelQueued({ key: k2, id: r2.id, ...libOpts() });
+  assert.deepEqual({ w: d.withdrawn, s: d.state, k: d.key, t: d.ackTs, as: d.deliveredAs }, { w: false, s: 'delivered', k: k2, t: a.ts, as: 'typed' });
+  for (const k of [key, k2]) fs.rmSync(mailboxPath(k, { dir: mboxDir }), { force: true });
 });
 
 test('agent-send --read prints and acks this session inbox rows', async () => {
