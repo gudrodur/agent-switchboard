@@ -23,6 +23,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -244,4 +245,76 @@ test('--queue forwards --idle-when to its detached waiter', async () => {
   const log = await readLog();
   assert.doesNotMatch(log, /target still busy after 4s/);
   await runScript(['--cancel', '--to', WID]).catch(() => {});
+});
+
+// ---- proof by state first: the tab's own record decides, the spinner does not ----
+//
+// The mock window spins forever, so on the spinner alone every send below is
+// exit 7. An OpenCode session row (opencode.db) says otherwise, and the state
+// wins, except --idle-when, which is the caller's own parked proof and wins
+// over busy. Tests above run with no store, so the state is unknown and the
+// spinner decides, exactly as before.
+
+const W_SID = 'ses_wait0000000000000test';
+const wStore = async (lastRow) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kitty-wait-state-'));
+  const file = path.join(dir, 'opencode.db');
+  const now = Date.now();
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE session_v2 (
+    id TEXT PRIMARY KEY, directory TEXT, model TEXT, parent_id TEXT,
+    time_created INTEGER, time_updated INTEGER, time_idle INTEGER, idle_outcome TEXT)`);
+  db.exec(`CREATE TABLE session_message (
+    id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+    time_created INTEGER, time_updated INTEGER, data TEXT)`);
+  db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?)')
+    .run(W_SID, '/tmp/kitty-wait-cwd', '{"id":"m"}', null, now - 60_000, now, null, null);
+  db.close();
+  await wAppend(file, 4, 'user', { time: { created: now - 9000 }, text: 'earlier' });
+  await wAppend(file, 11, lastRow, lastRow === 'idle'
+    ? { time: { created: now - 1000 }, outcome: 'succeeded' }
+    : { time: { created: now - 1000 }, content: [{ type: 'tool', name: 'shell', state: { status: 'running' } }] });
+  return { dir, file };
+};
+const wAppend = async (file, seq, type, data) => {
+  const db = new DatabaseSync(file);
+  db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)')
+    .run(`m-${seq}`, W_SID, type, seq, Date.now(), Date.now(), JSON.stringify(data));
+  db.close();
+};
+const wSend = (args, file, extraEnv = {}) => run(SCRIPT, args, {
+  env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, OPENCODE_TAB_DB: file, ...extraEnv }),
+}).then(
+  (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
+  (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
+);
+
+test('state=idle sends past a spinner title with no flag', async () => {
+  const { dir, file } = await wStore('idle');
+  try {
+    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--timeout', '8'], file);
+    await sleep(1500);
+    await wAppend(file, 12, 'user', { time: { created: Date.now() }, text: 'hi from the state test' });
+    const { code, err } = await p;
+    assert.equal(code, 0, err);
+    assert.match(err, /proved by opencode\.db session_message row/);
+    assert.doesNotMatch(err, /refusing to send into a mid-turn target/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('--idle-when still wins over state=busy', async () => {
+  const { dir, file } = await wStore('assistant');
+  try {
+    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--idle-when', 'Bíð eftir næsta', '--timeout', '8'], file, { KITTY_MOCK_SCREEN: PARKED });
+    await sleep(1500);
+    await wAppend(file, 12, 'user', { time: { created: Date.now() }, text: 'hi from the state test' });
+    const { code, err } = await p;
+    assert.equal(code, 0, err);
+    assert.match(err, /proved by opencode\.db session_message row/);
+    assert.doesNotMatch(err, /refusing to send into a mid-turn target/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

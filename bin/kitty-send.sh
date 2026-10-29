@@ -352,10 +352,9 @@ steerable_screen() {
 # --idle-when is the caller's own parked proof and wins over every other
 # busy signal, state included (its purpose is a tab that spins while waiting
 # for input). A tab the state file says is idle is idle regardless of the
-# spinner; Unknown (no session
-# file: or the link is unproven) keeps the existing
-# spinner logic, which is the weaker proof. Kept as one function so the wait
-# loop and the exit-7 precheck cannot drift apart.
+# spinner; Unknown (no session record, or the link is unproven) keeps the
+# existing spinner logic, which is the weaker proof. Kept as one function so
+# the wait loop and the exit-7 precheck cannot drift apart.
 target_busy() {  # $1 = title, $2 = window id
   steerable_screen "$2" && return 1
   case "$(tab_state_of "$2")" in
