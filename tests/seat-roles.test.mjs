@@ -252,6 +252,25 @@ test('--who shows a detached HEAD as HEAD@<short sha>', () => {
   assert.match(send(['--who']).stdout, new RegExp(`HEAD@${sha}`));
 });
 
+test('--who drops a beacon whose worktree was removed when the session has a live row', () => {
+  const repo = mkRepo('who-home');
+  const wt = mkRepo('who-wt');
+  beacon('gone-sess-1', repo, { windowId: 109, branch: 'main', repo: 'who-home' });
+  beacon('gone-sess-1', wt, { branch: 'fix/done', repo: 'who-home' });
+  fs.rmSync(wt, { recursive: true, force: true });
+  const rows = JSON.parse(send(['--who', '--json']).stdout).filter((s) => s.sessionId === 'gone-sess-1');
+  assert.deepEqual(rows.map((r) => r.cwd), [repo]);
+  assert.doesNotMatch(send(['--who']).stdout, /fix\/done/);
+});
+
+test('--who keeps a session whose only row is a removed directory', () => {
+  const wt = mkRepo('who-only');
+  beacon('gone-sess-2', wt, { windowId: 109, branch: 'fix/only', repo: 'who-only' });
+  fs.rmSync(wt, { recursive: true, force: true });
+  const rows = JSON.parse(send(['--who', '--json']).stdout).filter((s) => s.sessionId === 'gone-sess-2');
+  assert.equal(rows.length, 1);
+});
+
 const prompt = (sessionId, extra = {}) => {
   const r = spawnSync('node', [INJECT], {
     encoding: 'utf-8',
