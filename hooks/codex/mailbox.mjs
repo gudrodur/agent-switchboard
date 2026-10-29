@@ -8,7 +8,7 @@
 // chat is idle is delivered on the next submitted prompt.
 
 import { recordPresence, releasePresence } from '../../lib/presence.mjs';
-import { readUnackedBySession, supersedesNote, ack } from '../../lib/agent-mailbox.mjs';
+import { readInbox, supersedesNote, ack } from '../../lib/agent-mailbox.mjs';
 
 const readStdin = (timeoutMs = 500) =>
   new Promise((resolve) => {
@@ -26,7 +26,7 @@ const validIdentity = ({ session_id: sessionId, cwd }) =>
 export const handleEvent = (input, {
   record = recordPresence,
   release = releasePresence,
-  read = readUnackedBySession,
+  read = readInbox,
   acknowledge = ack,
 } = {}) => {
   const event = input?.hook_event_name;

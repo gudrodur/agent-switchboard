@@ -71,3 +71,21 @@ test('SessionEnd releases the Codex session beacon', () => {
   assert.equal(result.status, 0);
   assert.equal(readAllPresence().some((b) => b.sessionId === SID), false);
 });
+
+test('UserPromptSubmit delivers mail queued for a role the Codex session holds (#69)', async () => {
+  const sid = 'codex-role-holder-69';
+  const message = appendMessage({
+    to: 'role:codex-drain-probe', from: 'opencode-session', priority: 'queue', text: 'Queued for the role',
+  });
+  const { claimRole } = await import('../lib/seat-roles.mjs');
+  const store = openStore(defaultStorePath());
+  try {
+    claimRole(store, { role: 'codex-drain-probe', sessionId: sid, cwd: CWD, windowId: null });
+  } finally {
+    store.close();
+  }
+  const result = runHook({ hook_event_name: 'UserPromptSubmit', session_id: sid, cwd: CWD, prompt: 'Go' });
+  assert.equal(result.status, 0);
+  assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /Queued for the role/);
+  assert.equal(readUnacked('role:codex-drain-probe').some((r) => r.id === message.id), false);
+});

@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import { recordPresence } from '../../lib/presence.mjs';
-import { mailboxFileDir, readUnackedBySession, readUnackedByRoles, rolesHeldBy, claimRoleFromEnv, claimNudgeOnce, supersedesNote, ack } from '../../lib/agent-mailbox.mjs';
+import { mailboxFileDir, readInbox, claimRoleFromEnv, claimNudgeOnce, supersedesNote, ack } from '../../lib/agent-mailbox.mjs';
 // Whole stdin as a string. Resolves with whatever arrived when the stream
 // ends, errors, or the timeout fires, so the hook never hangs on a half-open
 // pipe. Inlined here (the only use) so this hook ships no library.
@@ -78,7 +78,7 @@ try {
     const rawWin0 = process.env.KITTY_WINDOW_ID;
     const win0 = rawWin0 != null && rawWin0 !== '' ? Number(rawWin0) : null;
     claimRoleFromEnv({ sessionId, cwd, windowId: Number.isFinite(win0) ? win0 : null });
-    found = [...readUnackedBySession(sessionId, opts), ...readUnackedByRoles(rolesHeldBy(sessionId), opts)];
+    found = readInbox(sessionId, opts);
   } catch (e) {
     process.stdout.write(`[mailbox] could not read inbox: ${e.message ?? e}\n`);
     found = null;
