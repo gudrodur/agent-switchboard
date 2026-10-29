@@ -27,6 +27,7 @@ import {
   appendMessage,
   cancelQueued,
   DELIVERED_AS,
+  findRecentTopicDelivery,
   mailboxPath,
   pruneStale,
   readUnacked,
@@ -198,7 +199,7 @@ test('readUnacked returns only messages without an ack row', () => {
 });
 
 test('DELIVERED_AS is the closed delivery-label set', () => {
-  assert.deepEqual([...DELIVERED_AS], ['prompt', 'mcp', 'steer', 'followUp', 'nextTurn']);
+  assert.deepEqual([...DELIVERED_AS], ['prompt', 'mcp', 'steer', 'followUp', 'nextTurn', 'typed']);
 });
 test('ack stays fail-open on an unknown label: the message still clears', () => {
   const key = '-repo-a__failopen';
@@ -1170,4 +1171,52 @@ test('the cwd fallback still resolves a beacon that recorded no window id', () =
   } finally {
     fs.writeFileSync(presFile, saved);
   }
+});
+
+// agent-config#1379 W5: a typed fallback leaves an acked row, and a send whose
+// topic was already delivered inside --topic-window sends nothing.
+test('a typed fallback records an acked via:typed row; the same topic is then not sent again', async () => {
+  const KEY_S3 = recipientKey({ cwd: '/repo/b', sessionId: 's3' });
+  fs.rmSync(mailboxPath(KEY_S3, { dir: mboxDir }), { force: true });
+  const okStub = path.join(binDir, 'kitty-send-ok.sh');
+  fs.writeFileSync(okStub, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > ${JSON.stringify(fallbackArgv)}\nexit 0\n`, { mode: 0o755 });
+  fs.rmSync(fallbackArgv, { force: true });
+  const env = childEnv({ AGENT_SEND_KITTY_SEND: okStub });
+  const first = await runSend(['--to', '991002', '--text', 'RESUME', '--topic', 'resume'], env);
+  assert.equal(first.code, 0, first.stderr);
+  assert.ok(fs.existsSync(fallbackArgv), 'first send typed');
+  const rows = fs.readFileSync(mailboxPath(KEY_S3, { dir: mboxDir }), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+  const msg = rows.find((r) => r.topic === 'resume');
+  assert.equal(msg.via, 'typed');
+  assert.ok(rows.some((r) => r.ack === msg.id && r.deliveredAs === 'typed'), 'acked at once');
+  assert.deepEqual(readUnacked(KEY_S3, { dir: mboxDir }), []);
+
+  fs.rmSync(fallbackArgv, { force: true });
+  const second = await runSend(['--to', '991002', '--text', 'RESUME again', '--topic', 'resume'], env);
+  assert.equal(second.code, 0);
+  assert.match(second.stderr, /already delivered: topic resume at \S+ from /);
+  assert.ok(!fs.existsSync(fallbackArgv), 'second send typed nothing');
+
+  const forced = await runSend(['--to', '991002', '--text', 'RESUME forced', '--topic', 'resume', '--force-topic'], env);
+  assert.equal(forced.code, 0);
+  assert.ok(fs.existsSync(fallbackArgv), '--force-topic sends anyway');
+  fs.rmSync(fallbackArgv, { force: true });
+  const zero = await runSend(['--to', '991002', '--text', 'RESUME w0', '--topic', 'resume', '--topic-window', '0'], env);
+  assert.ok(fs.existsSync(fallbackArgv), 'window 0 sends anyway');
+  assert.equal(zero.code, 0);
+  fs.rmSync(fallbackArgv, { force: true });
+  const other = await runSend(['--to', '991002', '--text', 'other', '--topic', 'different'], env);
+  assert.equal(other.code, 0);
+  assert.ok(fs.existsSync(fallbackArgv), 'a different topic is sent');
+});
+
+test('findRecentTopicDelivery honours the window and ignores unacked rows', () => {
+  const key = '-repo-a__tw';
+  const now = Date.now();
+  const m = appendMessage({ to: key, from: 'x', priority: 'now', text: 't', topic: 'win', now: now - 2 * 3600_000, ...libOpts() });
+  assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 3600_000, now, dir: mboxDir }), null, 'unacked');
+  ack({ key, id: m.id, deliveredAs: 'prompt', now: now - 2 * 3600_000, ...libOpts() });
+  assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 3600_000, now, dir: mboxDir }), null, 'outside the window');
+  assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 3 * 3600_000, now, dir: mboxDir }).from, 'x');
+  assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 0, now, dir: mboxDir }), null, 'window 0 disables');
 });

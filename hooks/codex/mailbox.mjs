@@ -8,7 +8,7 @@
 // chat is idle is delivered on the next submitted prompt.
 
 import { recordPresence, releasePresence } from '../../lib/presence.mjs';
-import { readUnackedBySession, ack } from '../../lib/agent-mailbox.mjs';
+import { readUnackedBySession, supersedesNote, ack } from '../../lib/agent-mailbox.mjs';
 
 const readStdin = (timeoutMs = 500) =>
   new Promise((resolve) => {
@@ -63,7 +63,7 @@ export const handleEvent = (input, {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: rows.map(({ row }) =>
-        `[mailbox] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}`,
+        `[mailbox] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}${supersedesNote(row)}`,
       ).join('\n'),
     },
   });
