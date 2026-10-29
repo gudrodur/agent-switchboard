@@ -61,6 +61,8 @@ import {
   readUnacked,
   readUnackedBySession,
   recipientKey,
+  supersedesNote,
+  TOPIC_RE,
   resolveRecipient,
   waitForAck,
 } from '../lib/agent-mailbox.mjs';
@@ -73,7 +75,7 @@ const die = (msg, code = 1) => {
 };
 const usage = () => `Usage:
   agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text LINE | --file /abs/path)
-                 [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
+                 [--now | --stop | --idle-when REGEX | --queue] [--deadline N] [--topic SLUG]
   agent-send.mjs --read [--as <session-id>]
   agent-send.mjs --cancel --to <mailbox-key> --id <row-id>
   agent-send.mjs --claim-role <name> [--take-over] [--as <session-id>]
@@ -84,6 +86,11 @@ const usage = () => `Usage:
   --idle-when   priority idle (REGEX is the consumer's parked proof)
   --queue       priority queue; the ack wait below is unbounded unless --deadline caps it
   --deadline N  seconds to wait for the ack row (default 120)
+  --topic SLUG  one delivery per topic: an earlier unacked message to the same
+                recipient with the same topic, from any sender, is withdrawn and
+                the new one says "(supersedes N)". Use it for broadcasts where
+                only the latest copy matters (RESUME, a round's question).
+                SLUG is [a-z0-9][a-z0-9._-]{0,63}; without it nothing collapses.
   --read        print this session's unacked inbox rows and ack them (inbox read;
                 the session is CLAUDE_CODE_SESSION_ID unless --as names it)
   --cancel      withdraw one queued row so a later drain cannot deliver it
@@ -209,6 +216,7 @@ const main = (argv) => {
   let mode = null;
   let idleWhen = null;
   let deadline = null;
+  let topic = null;
   let read = false;
   let cancel = false;
   let asSession = null;
@@ -235,6 +243,10 @@ const main = (argv) => {
       if (a === '--idle-when') idleWhen = need('--idle-when');
     }
     else if (a === '--deadline') deadline = need('--deadline');
+    else if (a === '--topic') {
+      topic = need('--topic');
+      if (!TOPIC_RE.test(topic)) die(`--topic must match ${TOPIC_RE} (lowercase slug, at most 64 characters), got '${topic}'`);
+    }
     else if (a === '--read') read = true;
     else if (a === '--cancel') cancel = true;
     else if (a === '--as') asSession = need('--as');
@@ -257,7 +269,7 @@ const main = (argv) => {
     if (sessionId == null) die('--read needs --as <session-id> outside a host-agent session');
     const found = readUnackedBySession(sessionId, {});
     for (const { key, row } of found) {
-      process.stdout.write(`[${key}] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}\n`);
+      process.stdout.write(`[${key}] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}${supersedesNote(row)}\n`);
       try {
         ack({ key, id: row.id, deliveredAs: 'mcp' });
       } catch {
@@ -441,7 +453,7 @@ const main = (argv) => {
 
   if (recipient.queuedForRole) {
     const qfrom = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
-    const qrow = appendMessage({ to: recipient.key, from: qfrom, priority, text });
+    const qrow = appendMessage({ to: recipient.key, from: qfrom, priority, text, topic });
     process.stderr.write(`agent-send: queued for role ${recipient.role}; no live holder${recipient.holderSessionId ? ` (last holder ${recipient.holderSessionId} is gone)` : ''}. Row ${qrow.id} in ${mailboxPath(recipient.key)}; the next session that claims the role receives it (exit 3: not delivered yet, do not resend; withdraw with --cancel --to ${recipient.key} --id ${qrow.id})\n`);
     process.exit(3);
   }
@@ -450,7 +462,7 @@ const main = (argv) => {
     kittyFallback(`no mailbox consumer flag for ${to} (live beacon, flag off)`);
   }
   const from = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
-  const row = appendMessage({ to: recipient.key, from, priority, text });
+  const row = appendMessage({ to: recipient.key, from, priority, text, topic });
   const mbox = mailboxPath(recipient.key);
   process.stderr.write(`agent-send: queued ${row.id} in ${mbox}\n`);
   // Row 58: a Claude Code consumer drains its mailbox only on
@@ -520,7 +532,7 @@ const main = (argv) => {
   // idle wait ran out, a send already queued, mid-turn without --now). The row
   // is withdrawn, so without this the message is gone: put it back.
   if (KITTY_SENT_NOTHING.has(status)) {
-    const again = appendMessage({ to: recipient.key, from, priority, text });
+    const again = appendMessage({ to: recipient.key, from, priority, text, topic });
     process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing (${KITTY_NOTHING_REASON[status] ?? 'see kitty-send.sh'}) for ${row.id}; re-queued as ${again.id} in ${mbox} for the consumer's next tool boundary (exit 3: not delivered yet, do not resend)\n`);
     process.exit(3);
   }

@@ -80,6 +80,7 @@ import {
   readUnacked,
   readUnackedBySession,
   sanitizeSessionId,
+  supersedesNote,
   ack,
   recipientKey,
   MAILBOX_DIR,
@@ -254,7 +255,7 @@ export const deliverIdle = ({ cwd, sessionId = null, dir, isIdle = () => false, 
         {
           customType: MESSAGE_TYPE,
           display: true,
-          content: `[mailbox] from ${row.from} (${row.priority}): ${row.text}`,
+          content: `[mailbox] from ${row.from} (${row.priority}): ${row.text}${supersedesNote(row)}`,
         },
         { deliverAs: deliveredAs, triggerTurn: true },
       );
@@ -304,7 +305,7 @@ export default function mailboxHook(pi: HookAPI): void {
           {
             customType: MESSAGE_TYPE,
             display: true,
-            content: `[mailbox] from ${row.from} (${row.priority}): ${row.text}`,
+            content: `[mailbox] from ${row.from} (${row.priority}): ${row.text}${supersedesNote(row)}`,
           },
           { deliverAs: deliveredAs },
         );

@@ -133,6 +133,8 @@ claude-resume-set.sh --replay [/abs/file.json] [--dry-run]
 omp-tab-state.sh <window-id> [--json] [--watch [--interval=S]]
 ```
 
+`--topic SLUG` (`[a-z0-9][a-z0-9._-]{0,63}`) makes a broadcast one delivery per recipient: sending withdraws every earlier unacked message with the same topic to that recipient, from any sender, and the readers collapse a send race to the newest row, rendered with ` (supersedes N)`. Use it where only the latest copy matters (a RESUME to every seat, a round's question), so a seat that wakes to two senders spends one turn, not two; a message without a topic never collapses.
+
 `--now` (the default) and `--stop` interrupt; `--idle-when` and `--queue` wait for a parked proof. After an unacked wait the sender withdraws the mailbox row and falls through to `bin/kitty-send.sh`, which types the text plus carriage return in one call and proves it by a new inbound row in the tab's session file. A Claude Code tab is the exception (#38): its composer swallows the carriage return of a long one-line send, so kitty-send types the text alone and then a lone carriage return (a second one at most), and proves it by a new user row carrying the text in the session's transcript, found through `~/.claude/sessions/<pid>.json`. An omp launch (`omp-tab.sh` only) checks its provider can serve before opening the tab (see `config/omp-providers.json` below) and needs a key command when a provider bills by key: the serve probe is itself a session-less run, executed with no window id and throwaway store paths, so it leaves no beacon or state behind. A launch whose new tab writes an aborted record with no assistant turn that did work (first-turn abort, agent-config#696) is retried once automatically; a second abort exits 3 with the window id.
 
 ```sh
