@@ -132,6 +132,39 @@ test('--claim-role claims for the current session', async () => {
   assert.notEqual(send(['--claim-role', 'Bad Name'], { CLAUDE_CODE_SESSION_ID: 'claimer-1' }).status, 0);
 });
 
+test('--release-role drops only a role this session holds', async () => {
+  const { roleHolder, rolesForSession } = await roles();
+  assert.equal(send(['--claim-role', 'spare-a'], { CLAUDE_CODE_SESSION_ID: 'releaser-1' }).status, 0);
+  assert.equal(send(['--claim-role', 'keep-b'], { CLAUDE_CODE_SESSION_ID: 'releaser-1' }).status, 0);
+  assert.equal(send(['--claim-role', 'other-c'], { CLAUDE_CODE_SESSION_ID: 'other-1' }).status, 0);
+
+  const r = send(['--release-role', 'spare-a'], { CLAUDE_CODE_SESSION_ID: 'releaser-1' });
+  assert.equal(r.status, 0, r.stderr);
+  await withDb((db) => {
+    assert.equal(roleHolder(db, 'spare-a'), null);
+    assert.deepEqual(rolesForSession(db, 'releaser-1'), ['keep-b']);
+  });
+
+  // Not held at all: nothing to do, still a success.
+  assert.equal(send(['--release-role', 'spare-a'], { CLAUDE_CODE_SESSION_ID: 'releaser-1' }).status, 0);
+
+  // Held by another session: refused, the holder keeps it.
+  const refused = send(['--release-role', 'other-c'], { CLAUDE_CODE_SESSION_ID: 'releaser-1' });
+  assert.equal(refused.status, 12, refused.stderr);
+  assert.match(refused.stderr, /held by session other-1/);
+  await withDb((db) => assert.equal(roleHolder(db, 'other-c').session_id, 'other-1'));
+
+  // Mail to a released role waits for its next holder.
+  const after = send(['--to', 'role:spare-a', '--text', 'hello'], { CLAUDE_CODE_SESSION_ID: 'sender-1' });
+  assert.equal(after.status, 3, after.stderr);
+  assert.match(after.stderr, /queued for role spare-a; no live holder/);
+
+  // Leave the shared store as found: later tests list role holders.
+  assert.equal(send(['--release-role', 'keep-b'], { CLAUDE_CODE_SESSION_ID: 'releaser-1' }).status, 0);
+  assert.equal(send(['--release-role', 'other-c'], { CLAUDE_CODE_SESSION_ID: 'other-1' }).status, 0);
+  await withDb((db) => assert.deepEqual(rolesForSession(db, 'releaser-1'), []));
+});
+
 test('an unknown window id lists same-repo seats and role holders to use instead', () => {
   beacon('sender-2', '/repo/proj', { windowId: 5, repo: 'proj' });
   beacon('sibling-1', '/repo/proj-wt', { windowId: 109, repo: 'proj' });
