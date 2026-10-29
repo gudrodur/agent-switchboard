@@ -32,13 +32,13 @@ test('SessionStart registers a stable Codex session as a mailbox consumer', () =
 test('UserPromptSubmit injects and acknowledges a reply addressed to the Codex session', () => {
   const key = recipientKey({ cwd: CWD, sessionId: SID });
   const message = appendMessage({
-    to: key, from: 'omp-session', priority: 'queue', text: 'Reply from the embedded OMP session',
+    to: key, from: 'opencode-session', priority: 'queue', text: 'Reply from the embedded session',
   });
   const result = runHook({ hook_event_name: 'UserPromptSubmit', session_id: SID, cwd: CWD, prompt: 'Continue' });
   assert.equal(result.status, 0);
   const output = JSON.parse(result.stdout);
   assert.equal(output.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
-  assert.match(output.hookSpecificOutput.additionalContext, /Reply from the embedded OMP session/);
+  assert.match(output.hookSpecificOutput.additionalContext, /Reply from the embedded session/);
   assert.deepEqual(readUnacked(key), []);
   const store = openStore(defaultStorePath());
   try {
@@ -52,7 +52,7 @@ test('UserPromptSubmit injects and acknowledges a reply addressed to the Codex s
 
 test('a missing or malformed session id cannot register an anonymous consumer or ack mail', () => {
   const key = recipientKey({ cwd: CWD, sessionId: null });
-  const message = appendMessage({ to: key, from: 'omp-session', priority: 'now', text: 'Do not lose me' });
+  const message = appendMessage({ to: key, from: 'opencode-session', priority: 'now', text: 'Do not lose me' });
   for (const input of [
     { hook_event_name: 'SessionStart', cwd: CWD },
     { hook_event_name: 'UserPromptSubmit', session_id: '', cwd: CWD },

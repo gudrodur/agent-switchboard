@@ -37,7 +37,7 @@ let binDir, queueDir;
 before(async () => {
   binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kitty-mock-'));
   // The mock: `@ ls` reports one window whose title carries a braille spinner
-  // (omp's "busy" marker, U+2839) and whose pid is alive, so the waiter never
+  // (a braille "busy" marker, U+2839) and whose pid is alive, so the waiter never
   // sees it go idle and never sees it die. get-text/send-text succeed quietly.
   // KITTY_MOCK_SCREEN is what `@ get-text` returns, so a test can put the
   // target in a state ("parked", "showing a dialog") without a real kitty.
@@ -244,61 +244,4 @@ test('--queue forwards --idle-when to its detached waiter', async () => {
   const log = await readLog();
   assert.doesNotMatch(log, /target still busy after 4s/);
   await runScript(['--cancel', '--to', WID]).catch(() => {});
-});
-// ---- proof by state first: the state file decides, the spinner does not ----
-//
-// The mock window spins forever, so on the spinner alone every send below is
-// exit 7. A linked session file says otherwise, and the file wins — except
-// --idle-when, which is the caller's own parked proof and wins over busy.
-// Nothing here touches the tests above: they run with no kitty-<id> file,
-// so the state is unknown and the spinner decides, exactly as before.
-
-const wStateDir = () => fs.mkdtemp(path.join(os.tmpdir(), 'kitty-wait-state-'));
-const wRow = (cwd, ts) => JSON.stringify({ type: 'session', version: 3, id: '01t', timestamp: ts, cwd });
-const wUser = (ts) => JSON.stringify({ type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'steer' }], timestamp: ts } });
-const wAsst = (stop, ts) => JSON.stringify({ type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stopReason: stop, timestamp: ts } });
-const wLink = (dir, lines) => fs.writeFile(path.join(dir, 'wtab.jsonl'), lines.join('\n') + '\n')
-  .then((fp) => fs.writeFile(path.join(dir, `kitty-${WID}`), `\n${path.join(dir, 'wtab.jsonl')}\n`));
-const wSend = (args, dir, extraEnv = {}) => {
-  const p = run(SCRIPT, args, {
-    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, OMP_TAB_STATE_DIR: dir, ...extraEnv }),
-  });
-  return p.then(
-    (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
-    (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
-  );
-};
-
-test('state=idle sends past a spinner title with no flag', async () => {
-  const dir = await wStateDir();
-  try {
-    const t = Date.now();
-    await wLink(dir, [wRow('/tmp/kitty-wait-cwd', new Date().toISOString()), wAsst('stop', t - 5000)]);
-    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--timeout', '8'], dir);
-    await sleep(1500);
-    await fs.appendFile(path.join(dir, 'wtab.jsonl'), wUser(Date.now()) + '\n');
-    const { code, err } = await p;
-    assert.equal(code, 0, err);
-    assert.match(err, /proved by session row/);
-    assert.doesNotMatch(err, /refusing to send into a mid-turn target/);
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test('--idle-when still wins over state=busy', async () => {
-  const dir = await wStateDir();
-  try {
-    const t = Date.now();
-    await wLink(dir, [wRow('/tmp/kitty-wait-cwd', new Date().toISOString()), wAsst('toolUse', t - 1000)]);
-    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--idle-when', 'Bíð eftir næsta', '--timeout', '8'], dir, { KITTY_MOCK_SCREEN: PARKED });
-    await sleep(1500);
-    await fs.appendFile(path.join(dir, 'wtab.jsonl'), wUser(Date.now()) + '\n');
-    const { code, err } = await p;
-    assert.equal(code, 0, err);
-    assert.match(err, /proved by session row/);
-    assert.doesNotMatch(err, /refusing to send into a mid-turn target/);
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
 });

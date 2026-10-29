@@ -1,6 +1,6 @@
 // Test isolation: no test may read or write the live switchboard store.
 //
-// After the store cutover every delegated process (and every omp tab) carries
+// After the store cutover every delegated process (and every agent tab) carries
 // AGENT_SWITCHBOARD_DB, which outranks the old tests' AGENT_MAILBOX_DIR /
 // presence-file pins: a spawned child resolves the ambient db and writes test
 // rows into the live state.db. Every child-process environment in this suite
@@ -11,16 +11,15 @@
 
 const ISOLATED_PREFIXES = ['AGENT_SWITCHBOARD_', 'AGENT_MAILBOX_'];
 
-// The session and window identity the omp hook reads: sessionIdOf() takes
-// OMP_SESSION_ID before anything else, and presence records KITTY_WINDOW_ID.
-// A suite run inside an omp tab inherits both, so a session-less test would
-// silently become a with-id test there. A test that needs either sets it
+// The window identity presence records is KITTY_WINDOW_ID. A suite run
+// inside an agent tab inherits it, so a window-less test would silently
+// become a with-window test there. A test that needs either sets it
 // itself, after this scrub (an explicit isolatedEnv() extra wins).
 // AGENT_SEAT_ROLE too: a seat started with `claude-tab.sh --role` carries it,
 // and claimRoleFromEnv/claimNudge read it as their default, so a suite run
 // from such a seat claims a role where a test expects the claim nudge (two
 // failures measured 2026-10-26 from window 258, agent-config#1310).
-const ISOLATED_KEYS = new Set(['OMP_SESSION_ID', 'KITTY_WINDOW_ID', 'AGENT_SEAT_ROLE']);
+const ISOLATED_KEYS = new Set(['KITTY_WINDOW_ID', 'AGENT_SEAT_ROLE']);
 
 export const isIsolatedKey = (key) => ISOLATED_KEYS.has(key) || ISOLATED_PREFIXES.some((p) => key.startsWith(p));
 

@@ -69,7 +69,7 @@ before(() => {
   };
   proc(101, 'claude', 410);
   proc(102, 'bash', 411);
-  proc(103, 'omp', 420);
+  proc(103, 'pi', 420);
   proc(104, 'claude', 430);
   proc(105, 'bash', 410);
   process.env.AGENT_MAILBOX_PROC_DIR = procDir;

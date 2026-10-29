@@ -181,7 +181,7 @@ if [ -r "$CLAUDE_JSON" ]; then
 else
   note "no Claude Code config at $CLAUDE_JSON — folder trust not checked"
 fi
-kitty_up || die "kitty remote control unavailable" 2
+kitty_up || die "kitty remote control unavailable.$KITTY_DIAG" 2
 [ "$RC" = 1 ] && [ -z "$RC_NAME" ] && RC_NAME="$TITLE"
 
 LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"

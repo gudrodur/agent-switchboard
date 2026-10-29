@@ -137,7 +137,7 @@ if [ -n "$OUT" ]; then case "$OUT" in /*) ;; *) die "--out must be absolute: $OU
 case "$SERVER" in ""|http://?*|https://?*) ;; *) die "--server takes a http(s) URL, got: $SERVER" ;; esac
 [ -x "$LAUNCH" ] || die "launcher not executable: $LAUNCH"
 [ -r "$DB" ] || note "no opencode store at $DB yet — opencode creates it on first start"
-kitty_up || die "kitty remote control unavailable" 2
+kitty_up || die "kitty remote control unavailable.$KITTY_DIAG" 2
 
 LAUNCHER="${CLAUDE_SESSION_ID:-${KITTY_WINDOW_ID:-}}"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | tr -d ' \t\r\n@')
