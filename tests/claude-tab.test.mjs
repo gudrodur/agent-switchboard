@@ -69,7 +69,7 @@ after(async () => {
 });
 
 beforeEach(async () => {
-  for (const f of ['launch-args', 'closed', 'nokitty', 'gone', 'session.jsonl', 'on-launch', 'sessions', 'omp-tab-launched.' + os.userInfo().uid]) {
+  for (const f of ['launch-args', 'closed', 'nokitty', 'gone', 'session.jsonl', 'on-launch', 'sessions', 'opencode-tab-launched.' + os.userInfo().uid]) {
     await fs.rm(path.join(stateDir, f), { recursive: true, force: true });
   }
   await fs.rm(projects, { recursive: true, force: true });
@@ -103,7 +103,7 @@ const tab = async (args) => {
         CLAUDE_TAB_PROJECTS: projects,
         CLAUDE_TAB_CONFIG: config,
         CLAUDE_SESSIONS_DIR: path.join(stateDir, 'sessions'),
-        OMP_TAB_TASK_CLAIM: path.join(stateDir, 'no-claim-cli.mjs'),
+        SWITCHBOARD_TASK_CLAIM: path.join(stateDir, 'no-claim-cli.mjs'),
       }),
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -113,7 +113,7 @@ const tab = async (args) => {
 };
 const exists = (f) => fs.access(path.join(stateDir, f)).then(() => true, () => false);
 const full = (...extra) => ['--title', 'claude: test', '--brief', brief, '--model', 'opus', '--cwd', cwd, ...extra];
-const stateRows = () => fs.readFile(path.join(stateDir, 'omp-tab-launched.' + os.userInfo().uid), 'utf8');
+const stateRows = () => fs.readFile(path.join(stateDir, 'opencode-tab-launched.' + os.userInfo().uid), 'utf8');
 
 test('--help prints the usage block and nothing else', async () => {
   const r = await tab(['--help']);
@@ -259,7 +259,7 @@ test('a window that dies at launch exits 3 and writes no state row', async () =>
   const r = await tab(full());
   assert.equal(r.code, 3);
   assert.match(r.err, /exited immediately after launch/);
-  assert.equal(await exists('omp-tab-launched.' + os.userInfo().uid), false);
+  assert.equal(await exists('opencode-tab-launched.' + os.userInfo().uid), false);
 });
 
 test('--brief is required for a package tab', async () => {
@@ -270,7 +270,7 @@ test('--brief is required for a package tab', async () => {
 });
 
 const holdSlot = () =>
-  fs.writeFile(path.join(stateDir, 'omp-tab-launched.' + os.userInfo().uid), `${OTHER_WID} ${other.pid} @other-seat omp: other\n`);
+  fs.writeFile(path.join(stateDir, 'opencode-tab-launched.' + os.userInfo().uid), `${OTHER_WID} ${other.pid} @other-seat opencode: other\n`);
 
 test('a package tab is refused while another seat holds the slot', async () => {
   await holdSlot();
@@ -300,7 +300,7 @@ test('--seat writes no state row, so the seat never holds the package-tab slot',
   const r = await tab(seat('--brief', brief));
   assert.equal(r.code, 0, r.err);
   assert.match(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), new RegExp(`^Read ${brief} and carry it out`, 'm'));
-  assert.equal(await exists('omp-tab-launched.' + os.userInfo().uid), false);
+  assert.equal(await exists('opencode-tab-launched.' + os.userInfo().uid), false);
 });
 
 test('--seat launches while another seat holds the package-tab slot', async () => {
@@ -308,7 +308,7 @@ test('--seat launches while another seat holds the package-tab slot', async () =
   await session('claude-opus-5-5');
   const r = await tab(seat());
   assert.equal(r.code, 0, r.err);
-  assert.equal(await stateRows(), `${OTHER_WID} ${other.pid} @other-seat omp: other\n`);
+  assert.equal(await stateRows(), `${OTHER_WID} ${other.pid} @other-seat opencode: other\n`);
 });
 
 // --resume: the transcript is there before the launch, so the proof reads only
@@ -395,7 +395,7 @@ test('--resume takes the cwd from the transcript and launches claude --resume wi
   assert.match(args, new RegExp(`^--resume\n${SID}$`, 'm'));
   assert.match(args, /resumed by claude-tab.sh --resume/);
   // A resumed session is a seat: no state row, no slot held.
-  assert.equal(await exists('omp-tab-launched.' + os.userInfo().uid), false);
+  assert.equal(await exists('opencode-tab-launched.' + os.userInfo().uid), false);
 });
 
 test('--resume with a --cwd that is not the session\'s is refused', async () => {

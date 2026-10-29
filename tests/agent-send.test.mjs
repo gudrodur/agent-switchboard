@@ -5,8 +5,8 @@
 // at a temp presence file with three live beacons (s1 on /repo/a WITH the
 // mailbox consumer flag, s2 on /repo/a without it, s3 on /repo/b without it),
 // and AGENT_MAILBOX_KITTY at a stub serving two canned windows (991001 on
-// /repo/a titled "omp: example-project review", 991002 on /repo/b titled
-// "omp: example-project review docs") that records every invocation. The
+// /repo/a titled "opencode: example-project review", 991002 on /repo/b titled
+// "opencode: example-project review docs") that records every invocation. The
 // no-consumer fallback is stubbed via AGENT_SEND_KITTY_SEND, which records
 // its argv and exits 5 to prove exit-code passthrough. The withdraw-path
 // tests use a second stub that runs the real kitty-send.sh's argument rules
@@ -59,8 +59,8 @@ before(async () => {
     tabs: [{
       title: 'tab-one',
       windows: [
-        { id: 991001, title: 'omp: example-project review', pid: 111, cwd: '/repo/a' },
-        { id: 991002, title: 'omp: example-project review docs', pid: 112, cwd: '/repo/b' },
+        { id: 991001, title: 'opencode: example-project review', pid: 111, cwd: '/repo/a' },
+        { id: 991002, title: 'opencode: example-project review docs', pid: 112, cwd: '/repo/b' },
       ],
     }],
   }]));
@@ -485,102 +485,6 @@ test('same-session collapse leaves two different session ids ambiguous', () => {
   }
 });
 
-// agent-config#914 row 2: a headless local-agent worker that inherits its
-// parent tab's KITTY_WINDOW_ID (forgot `env -u KITTY_WINDOW_ID`, see
-// skills/local-agents/SKILL.md) records a beacon on the SAME window id as
-// the tab's own beacon, so "window N matches K live sessions" fired even
-// though only one of them is really the tab. The one structural fact that
-// survives into the beacon is the shape of sessionId: a top-level omp
-// session's is always "<ISO-8601 timestamp>_<uuid>" (sessionIdOf() in
-// hooks/omp/pre/mailbox.ts takes it from the session file's own basename);
-// a worker's session file lives one level down, named after its task
-// ("P2LocalAgents", "P2Agents", ...), never timestamp-shaped.
-const TOP_LEVEL_SID = '2026-09-26T03-02-52-288Z_01a0dbaa-6480-72c4-b3a5-cdcbe61c62c2';
-
-test('a window whose local-agent workers also recorded its id resolves to the top-level session', () => {
-  const saved = fs.readFileSync(presFile, 'utf-8');
-  try {
-    writePresence([
-      { sessionId: 's1', cwd: '/repo/a', mailbox: true },
-      { sessionId: TOP_LEVEL_SID, cwd: '/repo/b', mailbox: true, windowId: 991001 },
-      { sessionId: 'P2LocalAgents', cwd: '/repo/b', mailbox: true, windowId: 991001 },
-      { sessionId: 'P2Agents', cwd: '/repo/b', mailbox: true, windowId: 991001 },
-    ]);
-    const r = resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/a' });
-    assert.equal(r.sessionId, TOP_LEVEL_SID);
-    assert.equal(r.windowId, 991001);
-  } finally {
-    fs.writeFileSync(presFile, saved);
-  }
-});
-
-test('two top-level-shaped sessions sharing one window id are still ambiguous, workers or not', () => {
-  const saved = fs.readFileSync(presFile, 'utf-8');
-  try {
-    writePresence([
-      { sessionId: 's1', cwd: '/repo/a', mailbox: true },
-      { sessionId: TOP_LEVEL_SID, cwd: '/repo/b', mailbox: true, windowId: 991001 },
-      { sessionId: '2026-09-26T04-00-00-000Z_01a0dbaa-0000-0000-0000-000000000000', cwd: '/repo/c', mailbox: true, windowId: 991001 },
-      { sessionId: 'P2LocalAgents', cwd: '/repo/b', mailbox: true, windowId: 991001 },
-    ]);
-    const err = (() => {
-      try {
-        resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/a' });
-      } catch (e) {
-        return e;
-      }
-      assert.fail('expected resolveRecipient to throw');
-    })();
-    assert.equal(err.code, 'mailbox-ambiguous');
-    assert.match(err.message, /2 live sessions/);
-    assert.doesNotMatch(err.message, /P2LocalAgents/);
-  } finally {
-    fs.writeFileSync(presFile, saved);
-  }
-});
-
-test('a window whose recorded sessions are all worker-shaped stays ambiguous (no top-level beacon to prefer)', () => {
-  const saved = fs.readFileSync(presFile, 'utf-8');
-  try {
-    writePresence([
-      { sessionId: 's1', cwd: '/repo/a', mailbox: true },
-      { sessionId: 'P2LocalAgents', cwd: '/repo/b', mailbox: true, windowId: 991001 },
-      { sessionId: 'P2Agents', cwd: '/repo/b', mailbox: true, windowId: 991001 },
-    ]);
-    const err = (() => {
-      try {
-        resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/a' });
-      } catch (e) {
-        return e;
-      }
-      assert.fail('expected resolveRecipient to throw');
-    })();
-    assert.equal(err.code, 'mailbox-ambiguous');
-    assert.match(err.message, /2 live sessions/);
-  } finally {
-    fs.writeFileSync(presFile, saved);
-  }
-});
-
-// Same preference, on the cwd-join fallback path (beacons that predate the
-// windowId field, or a worker whose launcher never set KITTY_WINDOW_ID at
-// all so it only shares the tab's cwd).
-test('a shared cwd whose worker sessions have no window id still resolves to the top-level session', () => {
-  const saved = fs.readFileSync(presFile, 'utf-8');
-  try {
-    writePresence([
-      { sessionId: 's1', cwd: '/repo/a', mailbox: true },
-      { sessionId: TOP_LEVEL_SID, cwd: '/repo/a', mailbox: true },
-      { sessionId: 'P2LocalAgents', cwd: '/repo/a', mailbox: true },
-      { sessionId: 'P2Agents', cwd: '/repo/a', mailbox: true },
-    ]);
-    const r = resolveRecipient('991001', { presenceFile: presFile, senderSessionId: 's1', senderCwd: '/repo/a' });
-    assert.equal(r.sessionId, TOP_LEVEL_SID);
-  } finally {
-    fs.writeFileSync(presFile, saved);
-  }
-});
-
 test('a window whose only live beacon is the sender is an error, never a self-send', () => {
   const saved = fs.readFileSync(presFile, 'utf-8');
   try {
@@ -637,7 +541,7 @@ test('pruneStale keeps a pre-move key while its session is live under another cw
   }
 });
 
-// 2026-09-11: a window with no mailbox consumer behind it (an omp
+// 2026-09-11: a window with no mailbox consumer behind it (a
 // tab, a plain shell, a sender-only cwd) falls back to kitty-send — the
 // supervisor steer path — while ambiguity stays fatal.
 test('agent-send to a sender-only window falls back to kitty-send, never self-sends', async () => {
@@ -651,7 +555,7 @@ test('agent-send to a sender-only window falls back to kitty-send, never self-se
     fs.rmSync(ownFile, { force: true });
     fs.rmSync(fallbackArgv, { force: true });
     const { code, stderr } = await runSend(
-      ['--to', '991001', '--text', 'steer to omp tab'],
+      ['--to', '991001', '--text', 'steer to a tab'],
       childEnv({ CLAUDE_CODE_SESSION_ID: 's1' }),
     );
     assert.equal(code, 5);
@@ -890,7 +794,7 @@ test('targeting the sender window by id never delivers to the cwd-sharer', () =>
       { sessionId: 's-sup', cwd: '/repo/shared', mailbox: true, windowId: 35 },
       { sessionId: 's-a', cwd: '/repo/shared', mailbox: true, windowId: 36 },
     ]);
-    // Sender session id unknown (an omp caller), but its window is known.
+    // Sender session id unknown (a caller without a session id), but its window is known.
     const err = (() => {
       try {
         resolveRecipient('35', { presenceFile: presFile, senderWindowId: 35 });

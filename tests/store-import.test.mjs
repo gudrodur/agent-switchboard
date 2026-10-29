@@ -127,16 +127,3 @@ test('retention deletes acked rows after 14 days; unacked rows survive', async (
     void waiting;
   }));
 
-test('omp keepalive re-touches a beacon in the presence table', async () =>
-  withIsolatedHome(async () => {
-    const { recordPresence, readAllPresence } = await import('../lib/presence.mjs');
-    const { touchPresenceBeacon } = await import('../hooks/omp/pre/mailbox.ts');
-    recordPresence({ cwd: '/repo/k', sessionId: 'k1', branch: 'main', mailbox: true, windowId: 99 });
-    assert.equal(touchPresenceBeacon({ cwd: '/repo/k', sessionId: 'k1' }), true);
-    const beacons = readAllPresence({});
-    assert.equal(beacons.length, 1);
-    assert.equal(beacons[0].mailbox, true);
-    assert.equal(beacons[0].branch, 'main', 'the touch must not null the branch turns maintain');
-    assert.equal(beacons[0].windowId, 99);
-    assert.ok(Date.now() - Date.parse(beacons[0].lastTick) < 60_000, 'lastTick is fresh again');
-  }));

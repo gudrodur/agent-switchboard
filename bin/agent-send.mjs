@@ -16,13 +16,12 @@
 // when kitty-send sends nothing the message goes back in the mailbox; both
 // exit 3. A recipient with no registered consumer
 // (beacon mailbox flag, set by the consumer hook each turn) falls through to
-// kitty-send.sh (resolved relative to this file, the way omp-tab.sh resolves
-// its sibling) and says so on stderr; so does a window id or title with no
-// mailbox consumer behind it at all (an omp tab, a plain shell — the
+// kitty-send.sh (resolved relative to this file) and says so on stderr; so does a window id or title with no
+// mailbox consumer behind it at all (a plain shell — the
 // supervisor steer path), while an ambiguous window stays a fatal error.
 // --stop becomes --now there, the one kitty flag that sends mid-turn. The
 // sender prunes stale mailboxes before resolving. --read prints and acks this
-// session's unacked rows (the inbox-read entry omp sessions call); --cancel
+// session's unacked rows (the inbox-read entry a session without a hook prompt calls); --cancel
 // withdraws one queued row by id.
 //
 // A slash command cannot travel this way. A mailbox row reaches the
@@ -286,8 +285,8 @@ const main = (argv) => {
     } else die(`unknown argument: ${a} (try --help)`);
   }
   // Inbox read: print this session's unacked rows and ack them, the pull path
-  // for a session whose hook prompt has not delivered them yet (omp reads its
-  // inbox this way; host-agent sessions get theirs injected at the next prompt).
+  // for a session whose hook prompt has not delivered them yet (host-agent
+  // sessions get theirs injected at the next prompt).
   if (read) {
     if (to != null || text != null || file != null || mode != null || cancel) die('--read takes only --as');
     const sessionId = asSession ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
@@ -387,8 +386,8 @@ const main = (argv) => {
   if (text == null || text === '') die('pass --text LINE or --file /abs/path');
   if (deadline != null && !/^\d+$/.test(deadline)) die('--deadline must be a number of seconds');
   const priority = mode ?? 'now';
-  // Default ack wait: 120 s for a recipient that can ack while idle (an omp
-  // tab's idle poll acks within seconds; a busy consumer acks at its next
+  // Default ack wait: 120 s for a recipient that can ack while idle (a
+  // consumer with an idle poll acks within seconds; a busy consumer acks at its next
   // tool boundary). A Claude Code consumer drains its mailbox only on
   // UserPromptSubmit, so an idle Claude Code recipient can NEVER ack: waiting
   // the full 120 s before the kitty fallback is pure latency (measured
@@ -407,10 +406,10 @@ const main = (argv) => {
   // Who is sending: a window id or title must never resolve back to this key
   // (2026-09-11: --to <window> queued into the sender's own mailbox). A
   // mailbox key stays an explicit address and may name the sender itself.
-  // A window with no mailbox consumer at all (an omp tab, a plain shell, a
+  // A window with no mailbox consumer at all (a plain shell, a
   // window only the sender's cwd matched) is NOT an error here the way an
   // ambiguous window is: it falls back to kitty-send for that window, the
-  // pre-mailbox path supervisors steer omp tabs with. The MCP cannot type
+  // pre-mailbox path supervisors steer tabs with. The MCP cannot type
   // into a window, so send_message keeps those as errors.
   const senderSessionId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
   // One kitty-send run; returns its exit status (null when a signal killed it).
@@ -532,8 +531,7 @@ const main = (argv) => {
   // Row 58: a Claude Code consumer drains its mailbox only on
   // UserPromptSubmit, so an IDLE recipient cannot ack — waiting the full
   // 120 s is pure latency before the kitty fallback (measured 2026-09-15,
-  // agent-config#638 row 58). An omp tab's idle poll acks within seconds,
-  // so capping the wait for an IDLE recipient is safe for both runtimes:
+  // agent-config#638 row 58). Capping the wait for an IDLE recipient is safe:
   // idle (no spinner in the RECIPIENT window's title) caps at
   // AGENT_SEND_IDLE_WAIT_S (default 5 s), busy keeps 120 s, and an explicit
   // --deadline always wins. When the recipient window or its title cannot
@@ -571,7 +569,7 @@ const main = (argv) => {
     process.exit(0);
   }
   // Still pending. Find the window BEFORE withdrawing: a mailbox
-  // key whose beacon recorded no window id (an omp tab before its consumer
+  // key whose beacon recorded no window id (a tab before its consumer
   // records one, or a cwd two sessions share) has nowhere to fall back to, so
   // the row stays queued for the consumer's next tool boundary.
   const target = recipient.windowId ?? recipient.beaconWindowId ?? (/__/.test(to) || recipient.role != null ? null : to);

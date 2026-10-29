@@ -1,5 +1,5 @@
 // Tests for kitty-send.sh's DELIVERY-PROOF semantics for slash commands
-//: a `/`-command sent to an omp prompt never echoes — the
+//: a `/`-command sent to an agent prompt never echoes — the
 // command's effect replaces its echo — so the tail/head fragment proof is
 // structurally unavailable and the old script reported exit 3 for a delivery
 // that landed (the /mcp reauth case, 2026-09-07). For text starting with `/`
@@ -193,105 +193,10 @@ test('a target busy before the send (--now) gets no weaker proof', async () => {
   assert.equal(r.code, 3, `${r.out}${r.err}`);
   assert.match(r.err, /could not observe it on screen/);
 });
-// ---- proof by state first: the session file, not the screen ----
-//
-// The stub window carries no cwd, so a fixture with cwd "" links to it
-// (created_at is absent too, so the pts-reuse check is skipped). Nothing
-// here touches the tests above: they run with no kitty-<id> file, so the
-// state is unknown and the echo proof decides, exactly as before.
-
-const stateEnv = () => ({ OMP_TAB_STATE_DIR: stateDir });
-const stateFile = () => path.join(stateDir, 'tabstate.jsonl');
-const sRow = (cwd, ts) => JSON.stringify({ type: 'session', version: 3, id: '01t', timestamp: ts, cwd });
-const sUser = (ts) => JSON.stringify({ type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'steer' }], timestamp: ts } });
-const sAsst = (stop, ts) => JSON.stringify({ type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stopReason: stop, timestamp: ts } });
-const sExit = () => JSON.stringify({ type: 'custom', customType: 'session_exit', data: { reason: 'sighup', kind: 'signal', recordedAt: new Date().toISOString() }, id: 'e1', timestamp: new Date().toISOString() });
-const linkState = async (lines) => {
-  await fs.writeFile(stateFile(), lines.join('\n') + '\n');
-  await fs.writeFile(path.join(stateDir, `kitty-${WID}`), `\n${stateFile()}\n`);
-};
-const unlinkState = async () => fs.rm(path.join(stateDir, `kitty-${WID}`), { force: true });
-
-test('a new role:user row in the session file proves the send', async () => {
-  await reset();
-  const t = Date.now();
-  await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
-  try {
-    const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the tab', '--timeout', '8'], {
-      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, OPENCODE_TAB_DB: path.join(stateDir, 'no-such-opencode.db'), ...stateEnv() }),
-    });
-    await new Promise((r) => setTimeout(r, 1500));
-    await fs.appendFile(stateFile(), sUser(Date.now()) + '\n');
-    const r = await p.then(
-      (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
-      (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
-    );
-    assert.equal(r.code, 0, `${r.out}${r.err}`);
-    assert.match(r.err, /proved by session row/);
-  } finally {
-    await unlinkState();
-  }
-});
-
-test('an exited tab dies exit 1 naming it, nothing sent', async () => {
-  await reset();
-  const t = Date.now();
-  await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000), sExit()]);
-  try {
-    const r = await runScript(['--to', WID, '--text', 'plain note for the tab', '--timeout', '3'], stateEnv());
-    assert.equal(r.code, 1, `${r.out}${r.err}`);
-    assert.match(r.err, /has exited/);
-  } finally {
-    await unlinkState();
-  }
-});
-// ---- pending, not failure, for a --now send still mid-turn
-//
-// STATE_KNOWN=1 with the target seen mid-turn at the send (--now): the message
-// sits in the steering queue and no role:user row can reach the session file
-// until the tool boundary. A flat-timeout "not reached" (exit 3) was a timing
-// artefact twice in production — the row landed at the next look both times.
-// The truthful verdict is pending (exit 8), keeping the do-not-resend rule.
-
-test('a --now send to a tab still mid-turn at the timeout reports pending, not failure', async () => {
-  await reset(null, { busyBefore: true });
-  const t = Date.now();
-  await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
-  try {
-    const r = await runScript(['--to', WID, '--text', 'plain note for the tab', '--timeout', '3', '--now'], stateEnv());
-    assert.equal(r.code, 8, `${r.out}${r.err}`);
-    assert.match(r.err, /pending in its steering queue/);
-    assert.match(r.err, /Do NOT send it again blind/);
-  } finally {
-    await unlinkState();
-  }
-});
-
-test('a --now send to a mid-turn tab still confirms when the row lands at the tool boundary', async () => {
-  await reset(null, { busyBefore: true });
-  const t = Date.now();
-  await linkState([sRow('/tmp/kitty-proof-cwd', new Date().toISOString()), sAsst('stop', t - 5000)]);
-  try {
-    const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the tab', '--timeout', '8', '--now'], {
-      env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir, OPENCODE_TAB_DB: path.join(stateDir, 'no-such-opencode.db'), ...stateEnv() }),
-    });
-    await new Promise((r) => setTimeout(r, 1500));
-    await fs.appendFile(stateFile(), sUser(Date.now()) + '\n');
-    const r = await p.then(
-      (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
-      (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
-    );
-    assert.equal(r.code, 0, `${r.out}${r.err}`);
-    assert.match(r.err, /proved by session row/);
-  } finally {
-    await unlinkState();
-  }
-});
-
 // ---- an OpenCode tab: its receipt is a row in opencode.db ---------------------
 //
 // No jsonl, no Claude transcript: opencode (v2.0.29+) writes session_v2 and
-// session_message into its own SQLite store, and omp-tab-state.sh reports
+// session_message into its own SQLite store, and tab-state.sh reports
 // session=opencode:<sid> with lines=MAX(seq). The proof is a NEW type:user row
 // past that seq whose text carries the message's start — the tab's own receipt,
 // and the same do-not-resend discipline as every other proof here.
@@ -309,7 +214,7 @@ const writeOcStore = async (rows) => {
     id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
     time_created INTEGER, time_updated INTEGER, data TEXT)`);
   const now = Date.now();
-  // The stub window carries no created_at, so omp-tab-state.sh's pty-reuse
+  // The stub window carries no created_at, so tab-state.sh's pty-reuse
   // check is skipped and this row is this window's by directory alone.
   db.prepare('INSERT INTO session_v2 (id, directory, model, parent_id, time_created, time_updated, time_idle, idle_outcome) VALUES (?,?,?,?,?,?,?,?)')
     .run(OC_SID, '/tmp/kitty-proof-cwd', '{"id":"m","providerID":"opencode"}', null, now, now, now, 'succeeded');
@@ -328,13 +233,12 @@ const ocIdleRow = { type: 'idle', seq: 12, data: { time: { created: Date.now() }
 
 test('a new type:user row in opencode.db proves the send', async () => {
   await reset();
-  await unlinkState();
   await writeOcStore([ocIdleRow]);
   try {
     const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the opencode tab', '--timeout', '8'], {
       env: isolatedEnv({
         PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir,
-        OMP_TAB_STATE_DIR: stateDir, OPENCODE_TAB_DB: ocDb(),
+        OPENCODE_TAB_DB: ocDb(),
       }),
     });
     await new Promise((r) => setTimeout(r, 2500));
@@ -353,7 +257,6 @@ test('a new type:user row in opencode.db proves the send', async () => {
 
 test('an opencode tab whose store gains no matching row is exit 3, not delivered', async () => {
   await reset();
-  await unlinkState();
   await writeOcStore([ocIdleRow]);
   try {
     // A row DOES land, but it is another prompt: without the text match it
@@ -361,7 +264,7 @@ test('an opencode tab whose store gains no matching row is exit 3, not delivered
     const p = run(SCRIPT, ['--to', WID, '--text', 'plain note for the opencode tab', '--timeout', '5'], {
       env: isolatedEnv({
         PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: stateDir,
-        OMP_TAB_STATE_DIR: stateDir, OPENCODE_TAB_DB: ocDb(),
+        OPENCODE_TAB_DB: ocDb(),
       }),
     });
     await new Promise((r) => setTimeout(r, 2000));

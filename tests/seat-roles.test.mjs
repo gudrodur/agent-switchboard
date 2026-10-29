@@ -192,23 +192,6 @@ test('an unknown window id lists same-repo seats and role holders to use instead
   assert.ok(hintLines <= 8, `hint too long: ${hintLines}`);
 });
 
-test('the omp hook claims AGENT_SEAT_ROLE and drains the role queue', async () => {
-  const { appendMessage } = await import('../lib/agent-mailbox.mjs');
-  const { drainInbox } = await import('../hooks/omp/pre/mailbox.ts');
-  const { roleHolder } = await roles();
-  appendMessage({ to: 'role:omp-seat', from: 'tester', priority: 'queue', text: 'for the omp seat' });
-  beacon('omp-1', '/repo/proj');
-  process.env.AGENT_SEAT_ROLE = 'omp-seat';
-  try {
-    const delivered = drainInbox({ cwd: '/repo/proj', sessionId: 'omp-1' });
-    assert.deepEqual(delivered.map((d) => d.row.text), ['for the omp seat']);
-    assert.equal(delivered[0].deliveredAs, 'followUp');
-  } finally {
-    delete process.env.AGENT_SEAT_ROLE;
-  }
-  await withDb((db) => assert.equal(roleHolder(db, 'omp-seat').session_id, 'omp-1'));
-});
-
 test('a replaced seat does not take its role back from a live successor', async () => {
   const { claimRole, roleHolder } = await roles();
   const { claimRoleFromEnv } = await import('../lib/agent-mailbox.mjs');
@@ -319,19 +302,4 @@ test('no nudge for a seat that holds a role or launched with AGENT_SEAT_ROLE', a
   await withDb((db) => claimRole(db, { role: 'nudge-held', sessionId: 'nudge-2', cwd: '/repo/proj' }));
   assert.doesNotMatch(prompt('nudge-2'), /holds no role/);
   assert.doesNotMatch(prompt('nudge-3', { AGENT_SEAT_ROLE: 'nudge-env' }), /holds no role/);
-});
-
-test('the omp hook nudges once per session, and not a role holder', async () => {
-  const { default: hook } = await import('../hooks/omp/pre/mailbox.ts');
-  const handlers = {};
-  const sent = [];
-  hook({ on: (ev, fn) => { handlers[ev] = fn; }, sendMessage: (m) => sent.push(m.content) });
-  const ctx = (sid) => ({ cwd: '/repo/proj', sessionManager: { getSessionFile: () => `/x/${sid}.jsonl` }, isIdle: () => false });
-  await handlers.turn_start({}, ctx('omp-nudge-1'));
-  await handlers.turn_start({}, ctx('omp-nudge-1'));
-  assert.equal(sent.filter((c) => /holds no role/.test(c)).length, 1);
-  const { claimRole } = await roles();
-  await withDb((db) => claimRole(db, { role: 'omp-held', sessionId: 'omp-nudge-2', cwd: '/repo/proj' }));
-  await handlers.turn_start({}, ctx('omp-nudge-2'));
-  assert.equal(sent.filter((c) => /holds no role/.test(c)).length, 1);
 });

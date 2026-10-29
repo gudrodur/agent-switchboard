@@ -93,7 +93,7 @@ test('unreadable store prints the could-not-read line, never silence', () => {
   assert.match(res.stdout, /^\[mailbox\] could not read inbox: /);
 });
 
-test('recordPresence without mailbox never clears an existing true (omp turn_start shape)', () => {
+test('recordPresence without mailbox never clears an existing true (turn_start shape)', () => {
   const file = path.join(root, 'presence.json');
   recordPresence({ file, cwd: CWD, sessionId: SID, mailbox: true });
   recordPresence({ file, cwd: CWD, sessionId: SID });

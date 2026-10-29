@@ -32,7 +32,7 @@
 # green.
 #
 # Cases 7-9 pin the WHEN, added after 2026-09-03: a send into a target showing
-# a selection dialog types hotkeys into the dialog (an `n` opened omp's note
+# a selection dialog types hotkeys into the dialog (an `n` opened an agent's note
 # field and the message went in there, mangled), so a dialog on screen must
 # refuse with nothing sent; and --wait-idle must hold a send until the title's
 # spinner clears, and send nothing when it never does. Shown to fail against
@@ -45,11 +45,6 @@
 # and --now is the one way to send anyway. Shown to fail against the
 # pre-change script: case 13 (it sent, exit 0) and the first half of 14
 # (--now was an unknown option).
-#
-# Case 15 pins the proof order: a window WITH a linked session
-# file is proven by a new role:user row, never the echo. The fixture links
-# its own pty to a fabricated session file through OMP_TAB_STATE_DIR, so no
-# agent is involved.
 #
 # So this test drives REAL kitty windows rather than fixtures — the bugs were
 # all about real rendering and a fixture would have reproduced none of them.
@@ -70,7 +65,7 @@ pass=0; fail=0
 WINDOWS=()
 # Every fixture is launched INTO ONE THROWAWAY TAB. `kitty @ launch
 # --type=window` without --match splits whichever tab is FOCUSED, and on
-# 2026-09-05 that was a live omp tab: twelve fixture panes appeared around the
+# 2026-09-05 that was a live agent tab: twelve fixture panes appeared around the
 # agent mid-run (harmless — no keystroke went to it — but it is somebody
 # else's window). --match id:<holder> puts each fixture in the holder's tab.
 HOLDER=$(kitty @ launch --type=tab --dont-take-focus --tab-title "kitty-send-selftest-$$" \
@@ -226,7 +221,7 @@ fi
 
 # 7. DIALOG ON SCREEN — refuses, sends NOTHING. A target showing its ask-the-
 #    user widget turns every keystroke into a hotkey and the \r into Enter on
-#    the highlighted option (2026-09-03: an `n` in the message opened omp's note
+#    the highlighted option (2026-09-03: an `n` in the message opened an agent's note
 #    field and the rest of the text went in there, mangled). The fixture prints
 #    the widget's footer and then runs `cat`, so had anything been sent it
 #    would echo on screen — the absence of the echo is the second assertion.
@@ -243,7 +238,7 @@ else
 fi
 
 # 8. --wait-idle WAITS OUT A SPINNER, THEN SENDS. The fixture sets a busy title
-#    (braille spinner, omp's convention), clears it after 3 s, and echoes. A
+#    (braille spinner), clears it after 3 s, and echoes. A
 #    send that ignored the title would land while "busy" and the script would
 #    not report the wait; a send that never came would fail to echo.
 #    No --title on these two launches: a launch-time title PINS the window
@@ -371,30 +366,6 @@ OUT=$("$SEND" --to "$W13" --text "$MSG" --timeout 4 --now --wait-idle 5 2>&1); R
 check "--now with --wait-idle is a usage error" 1 "mutually exclusive" "$RC" "$OUT"
 OUT=$("$SEND" --to "$W13" --text "$MSG" --timeout 4 --now --queue 2>&1); RC=$?
 check "--now with --queue is a usage error" 1 "mutually exclusive" "$RC" "$OUT"
-# 15. PROOF BY STATE ON A REAL WINDOW. The fixture is a plain `cat`
-#     window, but OMP_TAB_STATE_DIR links its pty to a fabricated session
-#     file, so the send is proven by a NEW role:user row rather than the
-#     echo: a steer row appended in the background confirms the delivery
-#     even though the echo proof is never consulted. Shown to fail against
-#     the pre-change script: without the state poll the verdict below is the
-#     echo proof, never "proved by session row".
-W15=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" cat 2>/dev/null)
-WINDOWS+=("$W15")
-sleep 1
-W15_PID=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W15" '.[].tabs[].windows[] | select(.id == $id) | .pid')
-W15_CWD=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W15" '.[].tabs[].windows[] | select(.id == $id) | .cwd // ""')
-W15_PTS=$(readlink "/proc/$W15_PID/fd/0" 2>/dev/null | sed 's|/dev/pts/||')
-STATEDIR15=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-state15.XXXXXX")
-NOW15=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-NOW15MS=$(($(date +%s%3N) - 5000))
-printf '{"type":"session","version":3,"id":"01selftest15","timestamp":"%s","cwd":"%s"}\n' "$NOW15" "$W15_CWD" > "$STATEDIR15/tab.jsonl"
-printf '{"type":"message","id":"a15","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop","timestamp":%s}}\n' "$NOW15MS" >> "$STATEDIR15/tab.jsonl"
-printf '%s\n%s\n' "$W15_CWD" "$STATEDIR15/tab.jsonl" > "$STATEDIR15/pts-$W15_PTS"
-( sleep 2; printf '{"type":"message","id":"u15","message":{"role":"user","content":[{"type":"text","text":"steer"}],"timestamp":%s}}\n' "$(($(date +%s%3N)))" >> "$STATEDIR15/tab.jsonl" ) &
-OUT=$(OMP_TAB_STATE_DIR="$STATEDIR15" "$SEND" --to "$W15" --text "$MSG" --timeout 8 2>&1); RC=$?
-wait
-check "linked session file proves the send by state" 0 "proved by session row" "$RC" "$OUT"
-rm -rf "$STATEDIR15"
 # 16. UNSUBMITTED CHIP AFTER THE SEND — the composer false green. The
 #     fixture behaves like the host agent's composer: the send-text burst lands
 #     as a `[Pasted text #1 +1 lines]` chip (the \r swallowed inside it) and
@@ -495,25 +466,5 @@ fi
 rm -rf "$T20"
 
 echo
-# 21. SLASH COMMAND TO A LINKED TAB. The window has a session file, so a
-#     normal send is proven by a new role:user row; a slash command writes
-#     none, so the proof is the screen changing. A plain `cat` window linked
-#     to a fabricated session echoes the command, which changes the screen.
-W21=$(kitty @ launch --type=window --dont-take-focus "${IN_TAB[@]}" --title "kitty-send-selftest-$$" cat 2>/dev/null)
-WINDOWS+=("$W21")
-sleep 1
-W21_PID=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W21" '.[].tabs[].windows[] | select(.id == $id) | .pid')
-W21_CWD=$(kitty @ ls 2>/dev/null | jq -r --argjson id "$W21" '.[].tabs[].windows[] | select(.id == $id) | .cwd // ""')
-W21_PTS=$(readlink "/proc/$W21_PID/fd/0" 2>/dev/null | sed 's|/dev/pts/||')
-STATEDIR21=$(mktemp -d "${TMPDIR:-/tmp}/kitty-send-state21.XXXXXX")
-NOW21=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-NOW21MS=$(($(date +%s%3N) - 5000))
-printf '{"type":"session","version":3,"id":"01selftest21","timestamp":"%s","cwd":"%s"}\n' "$NOW21" "$W21_CWD" > "$STATEDIR21/tab.jsonl"
-printf '{"type":"message","id":"a21","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop","timestamp":%s}}\n' "$NOW21MS" >> "$STATEDIR21/tab.jsonl"
-printf '%s\n%s\n' "$W21_CWD" "$STATEDIR21/tab.jsonl" > "$STATEDIR21/pts-$W21_PTS"
-OUT=$(OMP_TAB_STATE_DIR="$STATEDIR21" "$SEND" --to "$W21" --text "/selftest-slash-$$" --timeout 6 2>&1); RC=$?
-check "slash command to a linked tab is proven by the screen" 0 "slash command" "$RC" "$OUT"
-rm -rf "$STATEDIR21"
-
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

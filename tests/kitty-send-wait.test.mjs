@@ -23,6 +23,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { isolatedEnv } from './helpers/isolate-env.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -37,7 +38,7 @@ let binDir, queueDir;
 before(async () => {
   binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kitty-mock-'));
   // The mock: `@ ls` reports one window whose title carries a braille spinner
-  // (omp's "busy" marker, U+2839) and whose pid is alive, so the waiter never
+  // (a braille "busy" marker, U+2839) and whose pid is alive, so the waiter never
   // sees it go idle and never sees it die. get-text/send-text succeed quietly.
   // KITTY_MOCK_SCREEN is what `@ get-text` returns, so a test can put the
   // target in a state ("parked", "showing a dialog") without a real kitty.
@@ -245,41 +246,58 @@ test('--queue forwards --idle-when to its detached waiter', async () => {
   assert.doesNotMatch(log, /target still busy after 4s/);
   await runScript(['--cancel', '--to', WID]).catch(() => {});
 });
-// ---- proof by state first: the state file decides, the spinner does not ----
+
+// ---- proof by state first: the tab's own record decides, the spinner does not ----
 //
 // The mock window spins forever, so on the spinner alone every send below is
-// exit 7. A linked session file says otherwise, and the file wins — except
-// --idle-when, which is the caller's own parked proof and wins over busy.
-// Nothing here touches the tests above: they run with no kitty-<id> file,
-// so the state is unknown and the spinner decides, exactly as before.
+// exit 7. An OpenCode session row (opencode.db) says otherwise, and the state
+// wins, except --idle-when, which is the caller's own parked proof and wins
+// over busy. Tests above run with no store, so the state is unknown and the
+// spinner decides, exactly as before.
 
-const wStateDir = () => fs.mkdtemp(path.join(os.tmpdir(), 'kitty-wait-state-'));
-const wRow = (cwd, ts) => JSON.stringify({ type: 'session', version: 3, id: '01t', timestamp: ts, cwd });
-const wUser = (ts) => JSON.stringify({ type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'steer' }], timestamp: ts } });
-const wAsst = (stop, ts) => JSON.stringify({ type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stopReason: stop, timestamp: ts } });
-const wLink = (dir, lines) => fs.writeFile(path.join(dir, 'wtab.jsonl'), lines.join('\n') + '\n')
-  .then((fp) => fs.writeFile(path.join(dir, `kitty-${WID}`), `\n${path.join(dir, 'wtab.jsonl')}\n`));
-const wSend = (args, dir, extraEnv = {}) => {
-  const p = run(SCRIPT, args, {
-    env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, OMP_TAB_STATE_DIR: dir, ...extraEnv }),
-  });
-  return p.then(
-    (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
-    (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
-  );
+const W_SID = 'ses_wait0000000000000test';
+const wStore = async (lastRow) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kitty-wait-state-'));
+  const file = path.join(dir, 'opencode.db');
+  const now = Date.now();
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE session_v2 (
+    id TEXT PRIMARY KEY, directory TEXT, model TEXT, parent_id TEXT,
+    time_created INTEGER, time_updated INTEGER, time_idle INTEGER, idle_outcome TEXT)`);
+  db.exec(`CREATE TABLE session_message (
+    id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+    time_created INTEGER, time_updated INTEGER, data TEXT)`);
+  db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?)')
+    .run(W_SID, '/tmp/kitty-wait-cwd', '{"id":"m"}', null, now - 60_000, now, null, null);
+  db.close();
+  await wAppend(file, 4, 'user', { time: { created: now - 9000 }, text: 'earlier' });
+  await wAppend(file, 11, lastRow, lastRow === 'idle'
+    ? { time: { created: now - 1000 }, outcome: 'succeeded' }
+    : { time: { created: now - 1000 }, content: [{ type: 'tool', name: 'shell', state: { status: 'running' } }] });
+  return { dir, file };
 };
+const wAppend = async (file, seq, type, data) => {
+  const db = new DatabaseSync(file);
+  db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)')
+    .run(`m-${seq}`, W_SID, type, seq, Date.now(), Date.now(), JSON.stringify(data));
+  db.close();
+};
+const wSend = (args, file, extraEnv = {}) => run(SCRIPT, args, {
+  env: isolatedEnv({ PATH: `${binDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: queueDir, OPENCODE_TAB_DB: file, ...extraEnv }),
+}).then(
+  (ok) => ({ code: 0, out: ok.stdout, err: ok.stderr }),
+  (e) => ({ code: e.code ?? 1, out: e.stdout ?? '', err: e.stderr ?? '' }),
+);
 
 test('state=idle sends past a spinner title with no flag', async () => {
-  const dir = await wStateDir();
+  const { dir, file } = await wStore('idle');
   try {
-    const t = Date.now();
-    await wLink(dir, [wRow('/tmp/kitty-wait-cwd', new Date().toISOString()), wAsst('stop', t - 5000)]);
-    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--timeout', '8'], dir);
+    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--timeout', '8'], file);
     await sleep(1500);
-    await fs.appendFile(path.join(dir, 'wtab.jsonl'), wUser(Date.now()) + '\n');
+    await wAppend(file, 12, 'user', { time: { created: Date.now() }, text: 'hi from the state test' });
     const { code, err } = await p;
     assert.equal(code, 0, err);
-    assert.match(err, /proved by session row/);
+    assert.match(err, /proved by opencode\.db session_message row/);
     assert.doesNotMatch(err, /refusing to send into a mid-turn target/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -287,16 +305,14 @@ test('state=idle sends past a spinner title with no flag', async () => {
 });
 
 test('--idle-when still wins over state=busy', async () => {
-  const dir = await wStateDir();
+  const { dir, file } = await wStore('assistant');
   try {
-    const t = Date.now();
-    await wLink(dir, [wRow('/tmp/kitty-wait-cwd', new Date().toISOString()), wAsst('toolUse', t - 1000)]);
-    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--idle-when', 'Bíð eftir næsta', '--timeout', '8'], dir, { KITTY_MOCK_SCREEN: PARKED });
+    const p = wSend(['--to', WID, '--text', 'hi from the state test', '--idle-when', 'Bíð eftir næsta', '--timeout', '8'], file, { KITTY_MOCK_SCREEN: PARKED });
     await sleep(1500);
-    await fs.appendFile(path.join(dir, 'wtab.jsonl'), wUser(Date.now()) + '\n');
+    await wAppend(file, 12, 'user', { time: { created: Date.now() }, text: 'hi from the state test' });
     const { code, err } = await p;
     assert.equal(code, 0, err);
-    assert.match(err, /proved by session row/);
+    assert.match(err, /proved by opencode\.db session_message row/);
     assert.doesNotMatch(err, /refusing to send into a mid-turn target/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
