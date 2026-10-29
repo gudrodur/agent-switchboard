@@ -58,7 +58,7 @@ import {
   mailboxPath,
   pruneStale,
   readUnacked,
-  readUnackedBySession,
+  readInbox,
   recipientKey,
   findRecentTopicDelivery,
   recordTypedDelivery,
@@ -98,7 +98,8 @@ const usage = () => `Usage:
                 recipient within --topic-window MIN (default 60) sends nothing,
                 prints "already delivered: topic <t> at <ts> from <sender>" and
                 exits 0. --force-topic or --topic-window 0 sends anyway.
-  --read        print this session's unacked inbox rows and ack them (inbox read;
+  --read        print this session's unacked inbox rows, including the queues of
+                the roles it holds, and ack them (inbox read;
                 the session is CLAUDE_CODE_SESSION_ID unless --as names it)
   --cancel      withdraw one queued row so a later drain cannot deliver it. --id
                 is enough: the row's own recipient is used, whatever --to says
@@ -291,7 +292,7 @@ const main = (argv) => {
     if (to != null || text != null || file != null || mode != null || cancel) die('--read takes only --as');
     const sessionId = asSession ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
     if (sessionId == null) die('--read needs --as <session-id> outside a host-agent session');
-    const found = readUnackedBySession(sessionId, {});
+    const found = readInbox(sessionId, {});
     for (const { key, row } of found) {
       process.stdout.write(`[${key}] from ${row.from} (${row.priority}, ${row.ts}): ${row.text}${supersedesNote(row)}\n`);
       try {

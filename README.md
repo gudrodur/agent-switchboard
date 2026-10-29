@@ -91,7 +91,7 @@ Roles live in the `seat_roles` table of the SQLite store (`AGENT_SWITCHBOARD_DB`
 # Steer another agent; exit 0 means acked or proven, 3 means not delivered yet (do not resend),
 # 10 means typed but not proven (look at the window before resending); any other code is kitty-send.sh's.
 agent-send.mjs --to <window-id|title-substring|mailbox-key|role:name> (--text TEXT | --file /abs/path) [--now | --stop | --idle-when REGEX | --queue] [--deadline N]
-agent-send.mjs --read [--as <session-id>]   # print and ack this session's inbox rows
+agent-send.mjs --read [--as <session-id>]   # print and ack this session's inbox rows (incl. held roles' queues)
 agent-send.mjs --cancel --id <r> [--to <key>] # withdraw one queued row; the id alone is enough, the row's own recipient is used (exit 13: already delivered or withdrawn, 14: no such row)
 agent-send.mjs --to role:<name> --text TEXT # address a seat role; it survives a seat change
 agent-send.mjs --claim-role <name> [--take-over]  # hold a role; exit 11 if a live seat holds it

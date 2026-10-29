@@ -941,6 +941,25 @@ test('agent-send --read prints and acks this session inbox rows', async () => {
   fs.rmSync(mailboxPath(key, { dir: mboxDir }), { force: true });
 });
 
+test('agent-send --read drains mail queued for a role the session holds (#69)', async () => {
+  const queued = appendMessage({ to: 'role:drain-probe', from: 's-peer', priority: 'queue', text: 'queued for the role', ...libOpts() });
+  const claim = await runSend(['--claim-role', 'drain-probe', '--as', 'role-reader']);
+  assert.equal(claim.code, 0);
+  const runRead = () => new Promise((resolve) => {
+    const child = spawn('node', [SEND, '--read', '--as', 'role-reader'], { env: childEnv() });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+  const first = await runRead();
+  assert.equal(first.code, 0);
+  assert.match(first.stdout, /queued for the role/);
+  assert.match(first.stderr, /1 unacked/);
+  assert.equal(readUnacked('role:drain-probe', libOpts()).some((r) => r.id === queued.id), false);
+  assert.match((await runRead()).stderr, /0 unacked/);
+});
+
 test('agent-send --help names the inbox read verb', async () => {
   const out = await new Promise((resolve) => {
     const child = spawn('node', [SEND, '--help'], { env: childEnv() });
