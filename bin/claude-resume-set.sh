@@ -22,6 +22,9 @@
 #   --replay    run claude-tab.sh --resume for each row of FILE (default
 #               <dir>/latest.json), one at a time, skipping a row whose session
 #               is live already, so a second replay reopens nothing.
+#               A Remote Control name another seat holds (a live session, or an
+#               earlier row) gets a suffix, NAME-2, and a note on stderr, since
+#               two seats on one name cannot be told apart from the phone.
 #   --dry-run   with --replay: print each command, launch nothing.
 #
 # <dir> is ${XDG_STATE_HOME:-$HOME/.local/state}/claude-resume-set.
@@ -111,11 +114,33 @@ snapshot() {
   printf 'SNAPSHOT=%s\n' "$out"
 }
 
+# A name free among the taken ones, for a row whose own name is taken: NAME-2, NAME-3.
+free_rc_name() { # $1 = the name; reads the caller's TAKEN_RC
+  local k=2
+  while [ -n "${TAKEN_RC["$1-$k"]:-}" ]; do k=$((k + 1)); done
+  printf '%s-%s' "$1" "$k"
+}
+
 replay() {
-  local file="$1" dry="$2" n i row sid live code worst=0 out
+  local file="$1" dry="$2" n i row sid live code worst=0 out rc_name f pid
+  local -A TAKEN_RC=()
   [ -r "$file" ] || die "no snapshot at $file — take one with --snapshot before the reboot"
   n=$(jq '.sessions | length' "$file" 2>/dev/null) || die "$file is not a snapshot"
   [ "$n" -gt 0 ] || die "$file holds no sessions"
+  # Names in use before anything opens: a seat started by hand since the reboot
+  # (it is in no row), and a row that is live already wherever it sits in the file.
+  for f in "$CLAUDE_SESSIONS_DIR"/*.json; do
+    [ -f "$f" ] && claude_record_live "$f" || continue
+    pid=$(jq -r .pid "$f")
+    rc_name=$(flag_value "$pid" --remote-control)
+    [ -z "$rc_name" ] || TAKEN_RC["$rc_name"]=1
+  done
+  for i in $(seq 0 $((n - 1))); do
+    row=$(jq -c ".sessions[$i]" "$file")
+    [ "$(printf '%s' "$row" | jq -r .rc)" = true ] || continue
+    claude_live_record_of "$(printf '%s' "$row" | jq -r .sessionId)" >/dev/null || continue
+    TAKEN_RC["$(printf '%s' "$row" | jq -r .rcName)"]=1
+  done
   for i in $(seq 0 $((n - 1))); do
     row=$(jq -c ".sessions[$i]" "$file")
     sid=$(printf '%s' "$row" | jq -r .sessionId)
@@ -124,7 +149,16 @@ replay() {
       continue
     fi
     local args=(--resume "$sid" --title "$(printf '%s' "$row" | jq -r .title)" --model "$(printf '%s' "$row" | jq -r .model)")
-    [ "$(printf '%s' "$row" | jq -r .rc)" = true ] && args+=(--rc "$(printf '%s' "$row" | jq -r .rcName)")
+    if [ "$(printf '%s' "$row" | jq -r .rc)" = true ]; then
+      rc_name=$(printf '%s' "$row" | jq -r .rcName)
+      if [ -n "${TAKEN_RC["$rc_name"]:-}" ]; then
+        local wanted="$rc_name"
+        rc_name=$(free_rc_name "$wanted")
+        note "duplicate rc name '$wanted': session $sid opens as '$rc_name'"
+      fi
+      TAKEN_RC["$rc_name"]=1
+      args+=(--rc "$rc_name")
+    fi
     if [ "$dry" = 1 ]; then
       printf 'WOULD %s' "$TAB"; printf ' %q' "${args[@]}"; printf '\n'
       continue

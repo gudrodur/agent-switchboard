@@ -160,6 +160,39 @@ test('--replay resumes each row through claude-tab.sh and skips one that is live
   assert.equal(calls, `--resume ${DEAD} --title claude: t --model opus --rc xj greenfield\n`);
 });
 
+test('--replay gives a second row on one rc name a suffix, and says so', async () => {
+  await snapshotFile([row(DEAD, { rc: true, rcName: 'fedora' }), row(RECYCLED, { rc: true, rcName: 'fedora' })]);
+  const r = await set(['--replay']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, new RegExp(`duplicate rc name 'fedora': session ${RECYCLED} opens as 'fedora-2'`));
+  const calls = (await fs.readFile(path.join(root, 'tab-calls'), 'utf8')).trim().split('\n');
+  assert.equal(calls[0], `--resume ${DEAD} --title claude: t --model opus --rc fedora`);
+  assert.equal(calls[1], `--resume ${RECYCLED} --title claude: t --model opus --rc fedora-2`);
+});
+
+test('--replay does not reuse the rc name of a live seat that is in no row', async () => {
+  await record(flagged.pid, LIVE, { procStart: await procStart(flagged.pid) });
+  await snapshotFile([row(DEAD, { rc: true, rcName: 'fedora' })]);
+  const r = await set(['--replay']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(await fs.readFile(path.join(root, 'tab-calls'), 'utf8'), `--resume ${DEAD} --title claude: t --model opus --rc fedora-2\n`);
+});
+
+test('--replay keeps the name of a row that is live later in the file', async () => {
+  await record(plain.pid, LIVE, { procStart: await procStart(plain.pid), bridgeSessionId: 'session_01X' });
+  await snapshotFile([row(DEAD, { rc: true, rcName: 'hjal' }), row(LIVE, { rc: true, rcName: 'hjal' })]);
+  const r = await set(['--replay']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(await fs.readFile(path.join(root, 'tab-calls'), 'utf8'), `--resume ${DEAD} --title claude: t --model opus --rc hjal-2\n`);
+});
+
+test('--replay leaves distinct rc names alone', async () => {
+  await snapshotFile([row(DEAD, { rc: true, rcName: 'fedora' }), row(RECYCLED, { rc: true, rcName: 'hjal' })]);
+  const r = await set(['--replay']);
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.err, /duplicate rc name/);
+});
+
 test('--replay exits 3 when a row is launched but not proven', async () => {
   await snapshotFile([row(DEAD)]);
   await fs.writeFile(path.join(root, 'tab-code'), '3');
