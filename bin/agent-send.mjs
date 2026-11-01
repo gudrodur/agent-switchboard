@@ -56,6 +56,7 @@ import {
   listSeats,
   liveRoleHolder,
   mailboxPath,
+  presenceSource,
   pruneStale,
   readUnacked,
   readInbox,
@@ -69,10 +70,18 @@ import {
 } from '../lib/agent-mailbox.mjs';
 import { switchboardDir } from '../lib/presence.mjs';
 import { claimRole, releaseRole, validateRoleName, withRolesDb } from '../lib/seat-roles.mjs';
+import { defaultStorePath } from '../lib/store.mjs';
 
 const die = (msg, code = 1) => {
   process.stderr.write(`agent-send: ${msg}\n`);
   process.exit(code);
+};
+// Run without the machine's AGENT_SWITCHBOARD_DB, this bin opens a different,
+// empty store, and an empty answer reads as "there are no seats" (#73). Stderr,
+// so stdout stays the table or the JSON array its consumers parse.
+const warnNoLiveSeats = (seats = listSeats()) => {
+  if (seats.length > 0) return;
+  process.stderr.write(`agent-send: no live seats in ${presenceSource()}; that answers for this store only, and AGENT_SWITCHBOARD_DB selects another\n`);
 };
 const usage = () => `Usage:
   agent-send.mjs --to <window-id|title-substring|mailbox-key> (--text LINE | --file /abs/path)
@@ -121,7 +130,8 @@ const usage = () => `Usage:
   --who         list seats: window, session, cwd, repo, branch, roles, kitty
                 window title; a seat past the presence window whose process
                 and kitty window are still alive is listed as "idle <N>m";
-                --json prints it for machines
+                --json prints it for machines. With no rows, stderr names the
+                store it read; the exit code stays 0
 
   --file is a POINTER, not a payload: the recipient is sent "read <path>, a note
                 written for you" and reads whatever is on disk whenever the
@@ -319,6 +329,7 @@ const main = (argv) => {
       const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
       for (const r of [head, ...rows]) process.stdout.write(`${r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd()}\n`);
     }
+    warnNoLiveSeats(seats);
     process.exit(0);
   }
   if (releaseRoleName != null) {
@@ -362,7 +373,8 @@ const main = (argv) => {
         text: `role ${claimRoleName} was taken over by window ${wid ?? '(unknown)'} (session ${sessionId}); mail addressed to role:${claimRoleName} no longer reaches you`,
       });
     }
-    process.stderr.write(`agent-send: ${sessionId} now holds role ${claimRoleName}${prev && prev !== sessionId ? ` (took over from ${prev}${displaced ? ', who was notified' : ''})` : ''}\n`);
+    process.stderr.write(`agent-send: ${sessionId} now holds role ${claimRoleName} in ${defaultStorePath()}${prev && prev !== sessionId ? ` (took over from ${prev}${displaced ? ', who was notified' : ''})` : ''}\n`);
+    warnNoLiveSeats();
     process.exit(0);
   }
   // Cancel: withdraw one queued row so a later drain cannot deliver it.
@@ -519,6 +531,7 @@ const main = (argv) => {
     const qfrom = recipientKey({ cwd: process.cwd(), sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null });
     const qrow = appendMessage({ to: recipient.key, from: qfrom, priority, text, topic });
     process.stderr.write(`agent-send: queued for role ${recipient.role}; no live holder${recipient.holderSessionId ? ` (last holder ${recipient.holderSessionId} is gone)` : ''}. Row ${qrow.id} in ${mailboxPath(recipient.key)}; the next session that claims the role receives it (exit 3: not delivered yet, do not resend; withdraw with --cancel --id ${qrow.id})\n`);
+    warnNoLiveSeats();
     process.exit(3);
   }
   if (!recipient.hasConsumer) {

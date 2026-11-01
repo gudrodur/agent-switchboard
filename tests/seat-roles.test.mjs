@@ -201,6 +201,63 @@ test('a replaced seat does not take its role back from a live successor', async 
   await withDb((db) => assert.equal(roleHolder(db, 'relay').session_id, 'succ-new'));
 });
 
+// ---- naming the store when it holds no live seats (#73) ----
+//
+// Run without the machine's AGENT_SWITCHBOARD_DB, the bin opens a different,
+// empty store: "no seats" then answers for the wrong place, with exit 0.
+
+const emptyStore = (name) => path.join(fs.mkdtempSync(path.join(tmp, `${name}-`)), 'state.db');
+const noSeats = (where) => new RegExp(`no live seats in ${where.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b.*AGENT_SWITCHBOARD_DB`);
+
+test('--who on an empty store names it on stderr and keeps stdout and the exit code', () => {
+  const db = emptyStore('who-empty');
+  const table = send(['--who'], { AGENT_SWITCHBOARD_DB: db });
+  assert.equal(table.status, 0, table.stderr);
+  assert.match(table.stderr, noSeats(db));
+  assert.equal(table.stdout.trim().split('\n').length, 1, 'the table is still only its header');
+
+  const json = send(['--who', '--json'], { AGENT_SWITCHBOARD_DB: db });
+  assert.equal(json.status, 0, json.stderr);
+  assert.match(json.stderr, noSeats(db));
+  assert.deepEqual(JSON.parse(json.stdout), [], 'a consumer parsing stdout still gets an array');
+});
+
+test('--who says nothing about the store when it lists a seat', () => {
+  beacon('named-seat-1', '/repo/proj', { windowId: 109 });
+  const r = send(['--who']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /named-se/);
+  assert.equal(r.stderr, '');
+});
+
+test('--who names the presence file when a legacy pin backs it', () => {
+  const file = path.join(fs.mkdtempSync(path.join(tmp, 'who-file-')), 'presence.json');
+  const r = send(['--who'], { AGENT_SWITCHBOARD_DB: undefined, AGENT_MAILBOX_PRESENCE_FILE: file });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, noSeats(file));
+});
+
+test('--claim-role says which store it wrote to, and warns when no seat is live there', async () => {
+  const db = emptyStore('claim-empty');
+  const r = send(['--claim-role', 'lonely-seat'], { AGENT_SWITCHBOARD_DB: db, CLAUDE_CODE_SESSION_ID: 'lonely-1' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stderr.includes(`now holds role lonely-seat in ${db}`), r.stderr);
+  assert.match(r.stderr, noSeats(db));
+
+  beacon('claimer-live', '/repo/proj', { windowId: 109 });
+  const live = send(['--claim-role', 'busy-seat'], { CLAUDE_CODE_SESSION_ID: 'claimer-live' });
+  assert.equal(live.status, 0, live.stderr);
+  assert.ok(live.stderr.includes(`now holds role busy-seat in ${dbPath}`), live.stderr);
+  assert.doesNotMatch(live.stderr, /no live seats/);
+});
+
+test('a message queued for a role warns when no seat is live in that store', () => {
+  const db = emptyStore('queue-empty');
+  const r = send(['--to', 'role:nobody-here', '--text', 'anyone?'], { AGENT_SWITCHBOARD_DB: db, CLAUDE_CODE_SESSION_ID: 'sender-q' });
+  assert.equal(r.status, 3, r.stderr);
+  assert.match(r.stderr, noSeats(db));
+});
+
 // ---- --who normalisation and the claim nudge ----
 
 const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf-8' });
