@@ -113,10 +113,12 @@ jobs:
             const body = [
               "🚫 **This issue title does not follow the repo convention.**",
               "",
-              "**Rule:** `area: concise description` — `area` lowercase, from this repo's list.",
-              area
+              "**Rule:** `<area>: <concise description>` — the area lowercase, from this repo's list (e.g. `" + areas[0] + ": …`).",
+              area === "area"
+                ? "**Problem:** `area` is the placeholder, not an area: replace it with one from the list."
+                : area
                 ? "**Problem:** `" + area + "` is not an area in this repo." + (near ? " Did you mean `" + near + "`?" : "")
-                : "**Problem:** no `area:` prefix at all.",
+                : "**Problem:** no area prefix at all.",
               "**Valid areas:** " + areas.map((a) => "`" + a + "`").join(", ") + ".",
               "",
               "Type (epic / bug / enhancement …) goes in a **label**, never the title.",
