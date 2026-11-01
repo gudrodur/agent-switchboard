@@ -6,6 +6,13 @@
 # A label applied WITHOUT that line is a promise nothing can keep: the issue is
 # marked as sleeping and nothing will ever wake it.
 #
+# The reverse is just as dead: a dated `Revisit:` line with no label. The sweep
+# acts only on a labelled issue and reports this one as `dateless`, in a service
+# journal no author reads, so the date looks like a promise and is not one. The
+# guard therefore speaks in both directions, and on `opened` as well as later. It
+# does not watch `unlabeled`: the sweep's own wake-up removes the label while it
+# rewrites the key to `Revisited:`, and that order is not guaranteed.
+#
 # Deliberately a LOOSE check. It asks only whether a dated Revisit line is there
 # at all, which is the failure that actually happens; the sweep remains the
 # precise arbiter of whether the date parses and is a real day. Two layers that
@@ -18,8 +25,8 @@
 # scripts/lib/convention-repos.mjs holds, and convention-audit.mjs reports which
 # of them are missing the file.
 #
-# It comments ONCE, keyed on a marker, so editing the issue repeatedly does not
-# spam it. Fixing the body produces no confirmation comment: silence is the
+# Each direction comments ONCE, keyed on its own marker, so editing the issue
+# repeatedly does not spam it. Fixing the body produces no confirmation comment: silence is the
 # success signal, and the weekly sweep will list the issue as `waiting`.
 #
 # runs-on resolves through GUARD_RUNNER_LABELS, whose literal default is
@@ -38,7 +45,7 @@ name: revisit-guard
 
 on:
   issues:
-    types: [labeled, edited]
+    types: [opened, labeled, edited]
 
 permissions:
   issues: write
@@ -52,26 +59,43 @@ jobs:
           script: |
             const LABEL = "blocked: time";
             const MARKER = "<!-- revisit-guard -->";
+            const DATELESS_MARKER = "<!-- revisit-guard:dateless -->";
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
             const num = issue.number;
 
             const labelled = (issue.labels || []).some((l) => (l.name || l) === LABEL);
-            if (!labelled) return;
 
             // Loose on purpose — see the header. `Revisit:` followed by something
             // date-shaped, anywhere in the body, tolerating bold/backticks/quoting.
-            const hasDate = /^[\s>*_`-]*revisit[*_`]*\s*:\s*[*_`]*\s*\d{4}-\d{2}-\d{2}/im
-              .test(issue.body || "");
-            if (hasDate) return;
+            // A spent `Revisited:` does not match, since the key must end at the colon.
+            const date = /^[\s>*_`-]*revisit[*_`]*\s*:\s*[*_`]*\s*(\d{4}-\d{2}-\d{2})/im
+              .exec(issue.body || "")?.[1];
+
+            // The label and the date only work as a pair.
+            if (labelled === Boolean(date)) return;
+            // The sweep reads open issues only, so a closed one has no promise to break.
+            if (date && issue.state === "closed") return;
+            const marker = date ? DATELESS_MARKER : MARKER;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number: num, per_page: 100,
             });
-            if (comments.some((c) => (c.body || "").includes(MARKER))) return;
+            if (comments.some((c) => (c.body || "").includes(marker))) return;
 
-            const body = [
-              MARKER,
+            const body = date ? [
+              marker,
+              `⏳ **\`Revisit: ${date}\` with no \`blocked: time\` label — nothing will act on this date.**`,
+              "",
+              "The weekly sweep wakes only an issue that carries the label. This one it reports",
+              "as `dateless`, in a journal no author reads, and posts nothing here when the",
+              "date arrives.",
+              "",
+              "If only time unblocks this, add the `blocked: time` label. If the date is just",
+              "a note to yourself, take it off the `Revisit:` key so it stops looking like a",
+              "promise.",
+            ].join("\n") : [
+              marker,
               "⏳ **`blocked: time` with no `Revisit:` date — nothing will wake this issue.**",
               "",
               "The label says there is nobody to chase and only elapsed time or accumulated",
