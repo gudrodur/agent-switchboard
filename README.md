@@ -55,6 +55,26 @@ Add the repo's hook file, in place, to the existing `UserPromptSubmit` hook list
 
 The hook reads this session's unacked rows by session id, acks each with `prompt`, prints them as turn context, and refreshes this session's presence entry so senders route here instead of the terminal. It always exits 0 and prints nothing when the inbox is empty.
 
+### Host agent: the Stop drain
+
+A row queued for a seat that is mid-turn would otherwise wait for the next prompt, and an idle seat never gets one. Add the Stop hook, in place, to the `Stop` list in `settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node <checkout>/hooks/claude/mailbox-stop.mjs" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+When the turn ends the hook reads this session's unacked rows, acks each with `stop` before printing, and prints `{"decision":"block","reason":...}` so the seat continues with the messages. The acks bound the loop: a second Stop finds nothing. It prints nothing when the inbox is empty, does not refresh presence or claim roles, and always exits 0.
+
 ### Codex desktop: the inbox hook
 
 Add the switchboard hook to the existing `SessionStart`, `UserPromptSubmit`, and `SessionEnd` lists in `~/.codex/hooks.json`. Keep the existing handlers; Codex loads all matching hook sources. If this machine uses a switchboard environment bootstrap, preload it before the hook so the Codex app uses the same SQLite store as the other agents:

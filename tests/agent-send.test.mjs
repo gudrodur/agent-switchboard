@@ -200,7 +200,7 @@ test('readUnacked returns only messages without an ack row', () => {
 });
 
 test('DELIVERED_AS is the closed delivery-label set', () => {
-  assert.deepEqual([...DELIVERED_AS], ['prompt', 'mcp', 'steer', 'followUp', 'nextTurn', 'typed']);
+  assert.deepEqual([...DELIVERED_AS], ['prompt', 'stop', 'mcp', 'steer', 'followUp', 'nextTurn', 'typed']);
 });
 test('ack stays fail-open on an unknown label: the message still clears', () => {
   const key = '-repo-a__failopen';
