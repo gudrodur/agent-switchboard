@@ -15,7 +15,11 @@
 #               transcript's last assistant model), Remote Control (on when
 #               the process has --remote-control or the record a
 #               bridgeSessionId; named by the flag's value, else the cwd's
-#               basename) and the kitty tab title. Writes FILE (default
+#               basename), the kitty tab title, `role` (the switchboard role:
+#               AGENT_SEAT_ROLE in the process's environ, else the first role
+#               the store's seat_roles holds for the session, else null) and
+#               `windowId` (KITTY_WINDOW_ID in the environ as an integer, else
+#               null). Writes FILE (default
 #               <dir>/latest.json), a timestamped copy beside it, and a .md
 #               a person can follow by hand. A session with no assistant turn
 #               and no --model is left out, and said so.
@@ -25,6 +29,7 @@
 #               A Remote Control name another seat holds (a live session, or an
 #               earlier row) gets a suffix, NAME-2, and a note on stderr, since
 #               two seats on one name cannot be told apart from the phone.
+#               A row with a role passes it on as claude-tab.sh --role.
 #   --dry-run   with --replay: print each command, launch nothing.
 #
 # <dir> is ${XDG_STATE_HOME:-$HOME/.local/state}/claude-resume-set.
@@ -57,11 +62,13 @@ argv_of() { tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null; }
 flag_value() {
   argv_of "$1" | awk -v f="$2" 'hit { if ($0 !~ /^-/) print; exit } $0 == f { hit = 1 }'
 }
+# The value of variable $2 in pid $1's environment, or nothing (same user only).
+env_value() { tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'; }
 # Not grep -q: an early exit kills tr with SIGPIPE, and pipefail fails the match.
 has_flag() { argv_of "$1" | grep -x -- "$2" >/dev/null; }
 
 snapshot() {
-  local out="$1" rows="[]" f rec pid sid cwd model rc rc_name title transcript skipped=0 kls
+  local out="$1" rows="[]" f rec pid sid cwd model rc rc_name title transcript skipped=0 kls role win
   kls=$(kitty @ ls 2>/dev/null || printf '[]')
   for f in "$CLAUDE_SESSIONS_DIR"/*.json; do
     [ -f "$f" ] || continue
@@ -90,9 +97,15 @@ snapshot() {
     title=$(printf '%s' "$kls" | jq -r --argjson pid "$pid" '
       [.[].tabs[] | select(any(.windows[].foreground_processes[]?; .pid == $pid)) | .title] | first // ""' 2>/dev/null)
     [ -n "$title" ] || title="claude: $(basename "$cwd")"
+    role=$(env_value "$pid" AGENT_SEAT_ROLE)
+    [ -n "$role" ] || role=$(node "$HERE/seat-role.mjs" "$sid" 2>/dev/null | head -n1)
+    win=$(env_value "$pid" KITTY_WINDOW_ID)
+    case "$win" in ''|*[!0-9]*) win=null ;; esac
+    [ "$win" = null ] || win=$((10#$win))
     rows=$(printf '%s' "$rows" | jq -c --arg sid "$sid" --arg cwd "$cwd" --arg model "$model" \
       --argjson rc "$rc" --arg rcName "$rc_name" --arg title "$title" --argjson pid "$pid" \
-      '. + [{sessionId: $sid, cwd: $cwd, model: $model, rc: $rc, rcName: (if $rc then $rcName else null end), title: $title, pid: $pid}]')
+      --arg role "$role" --argjson win "$win" \
+      '. + [{sessionId: $sid, cwd: $cwd, model: $model, rc: $rc, rcName: (if $rc then $rcName else null end), title: $title, pid: $pid, role: (if $role == "" then null else $role end), windowId: $win}]')
   done
   local n stamp tmp md
   n=$(printf '%s' "$rows" | jq length)
@@ -122,7 +135,7 @@ free_rc_name() { # $1 = the name; reads the caller's TAKEN_RC
 }
 
 replay() {
-  local file="$1" dry="$2" n i row sid live code worst=0 out rc_name f pid
+  local file="$1" dry="$2" n i row sid live code worst=0 out rc_name f pid role
   local -A TAKEN_RC=()
   [ -r "$file" ] || die "no snapshot at $file — take one with --snapshot before the reboot"
   n=$(jq '.sessions | length' "$file" 2>/dev/null) || die "$file is not a snapshot"
@@ -159,6 +172,8 @@ replay() {
       TAKEN_RC["$rc_name"]=1
       args+=(--rc "$rc_name")
     fi
+    role=$(printf '%s' "$row" | jq -r '.role // ""')
+    [ -z "$role" ] || args+=(--role "$role")
     if [ "$dry" = 1 ]; then
       printf 'WOULD %s' "$TAB"; printf ' %q' "${args[@]}"; printf '\n'
       continue

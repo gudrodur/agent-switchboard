@@ -80,7 +80,7 @@ beforeEach(async () => {
   await fs.mkdir(sessions, { recursive: true });
 });
 
-const set = async (args) => {
+const set = async (args, extraEnv = {}) => {
   try {
     const r = await run('bash', [SCRIPT, ...args], {
       env: isolatedEnv({
@@ -89,6 +89,7 @@ const set = async (args) => {
         CLAUDE_PROJECTS_DIR: projects,
         CLAUDE_RESUME_SET_DIR: snapDir,
         CLAUDE_RESUME_SET_TAB: path.join(binDir, 'tab'),
+        ...extraEnv,
       }),
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -116,7 +117,7 @@ test('--snapshot keeps only live interactive sessions: a dead pid, a recycled pi
   assert.match(r.out, new RegExp(`^SNAPSHOT=${snapDir}/latest\\.json$`, 'm'));
   const snap = await latest();
   assert.deepEqual(snap.sessions, [
-    { sessionId: LIVE, cwd, model: 'sonnet', rc: true, rcName: 'fedora', title: 'claude: fedora', pid: flagged.pid },
+    { sessionId: LIVE, cwd, model: 'sonnet', rc: true, rcName: 'fedora', title: 'claude: fedora', pid: flagged.pid, role: null, windowId: null },
   ]);
   const md = await fs.readFile(path.join(snapDir, 'latest.md'), 'utf8');
   assert.match(md, new RegExp(`--remote-control 'fedora' --resume ${LIVE}`));
@@ -129,7 +130,7 @@ test('--snapshot takes the model from the transcript and turns RC on from a brid
   const r = await set(['--snapshot']);
   assert.equal(r.code, 0, r.err);
   assert.deepEqual((await latest()).sessions, [
-    { sessionId: BRIDGED, cwd, model: 'claude-opus-5-5', rc: true, rcName: 'samtak-spjall', title: 'claude: samtak-spjall', pid: plain.pid },
+    { sessionId: BRIDGED, cwd, model: 'claude-opus-5-5', rc: true, rcName: 'samtak-spjall', title: 'claude: samtak-spjall', pid: plain.pid, role: null, windowId: null },
   ]);
 });
 
@@ -139,6 +140,47 @@ test('--snapshot leaves out a session with no model to resume on, and says so', 
   assert.equal(r.code, 0, r.err);
   assert.match(r.err, /no --model and no assistant turn — left out/);
   assert.deepEqual((await latest()).sessions, []);
+});
+
+test('--snapshot records the role and kitty window id from the process environment', async () => {
+  const seat = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], {
+    stdio: 'ignore',
+    env: { ...process.env, AGENT_SEAT_ROLE: 'x-role', KITTY_WINDOW_ID: '7' },
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 200));
+    await record(seat.pid, BRIDGED, { procStart: await procStart(seat.pid) });
+    await transcript(BRIDGED, 'claude-opus-5-5');
+    const r = await set(['--snapshot']);
+    assert.equal(r.code, 0, r.err);
+    const [s] = (await latest()).sessions;
+    assert.equal(s.role, 'x-role');
+    assert.equal(s.windowId, 7);
+  } finally {
+    seat.kill();
+  }
+});
+
+test('--snapshot falls back to the store role when the environment has none, and to null without a store', async () => {
+  const dbPath = path.join(root, 'state.db');
+  await fs.rm(dbPath, { force: true });
+  await record(plain.pid, BRIDGED, { procStart: await procStart(plain.pid) });
+  await transcript(BRIDGED, 'claude-opus-5-5');
+  const missing = await set(['--snapshot'], { AGENT_SWITCHBOARD_DB: dbPath });
+  assert.equal(missing.code, 0, missing.err);
+  assert.equal((await latest()).sessions[0].role, null);
+  const { claimRole } = await import('../lib/seat-roles.mjs');
+  const { openStore } = await import('../lib/store.mjs');
+  const db = openStore(dbPath);
+  claimRole(db, { role: 'store-role', sessionId: BRIDGED });
+  db.close();
+  const seeded = await set(['--snapshot'], { AGENT_SWITCHBOARD_DB: dbPath });
+  assert.equal(seeded.code, 0, seeded.err);
+  assert.equal((await latest()).sessions[0].role, 'store-role');
+  await fs.writeFile(dbPath, 'not a database');
+  const broken = await set(['--snapshot'], { AGENT_SWITCHBOARD_DB: dbPath });
+  assert.equal(broken.code, 0, broken.err);
+  assert.equal((await latest()).sessions[0].role, null);
 });
 
 const snapshotFile = async (rows) => {
@@ -158,6 +200,15 @@ test('--replay resumes each row through claude-tab.sh and skips one that is live
   assert.match(r.out, new RegExp(`^OK ${DEAD} WINDOW_ID=4242$`, 'm'));
   const calls = await fs.readFile(path.join(root, 'tab-calls'), 'utf8');
   assert.equal(calls, `--resume ${DEAD} --title claude: t --model opus --rc xj greenfield\n`);
+});
+
+test('--replay passes --role for a row with a role and omits it for a null role', async () => {
+  await snapshotFile([row(DEAD, { role: 'x-role', windowId: 7 }), row(RECYCLED, { role: null, windowId: null })]);
+  const r = await set(['--replay']);
+  assert.equal(r.code, 0, r.err);
+  const calls = (await fs.readFile(path.join(root, 'tab-calls'), 'utf8')).trim().split('\n');
+  assert.equal(calls[0], `--resume ${DEAD} --title claude: t --model opus --role x-role`);
+  assert.equal(calls[1], `--resume ${RECYCLED} --title claude: t --model opus`);
 });
 
 test('--replay gives a second row on one rc name a suffix, and says so', async () => {
