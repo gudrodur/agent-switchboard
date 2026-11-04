@@ -146,7 +146,9 @@ const usage = () => `Usage:
 
   Exit: the code is the delivery verdict.
     0   delivered: acked in the mailbox, or kitty-send proved the text landed
-    3   pending, do not resend: queued in the mailbox for the consumer,
+    3   pending, do not resend: queued in the mailbox for the consumer (a
+        Claude Code seat drains it at its next prompt or when its current
+        turn ends),
         re-queued after kitty-send sent nothing, a kitty --queue waiter
         started (its verdict lands in the queue log), or kitty-send sent it
         and could not prove it
@@ -585,10 +587,10 @@ const main = (argv) => {
   // Still pending. Find the window BEFORE withdrawing: a mailbox
   // key whose beacon recorded no window id (a tab before its consumer
   // records one, or a cwd two sessions share) has nowhere to fall back to, so
-  // the row stays queued for the consumer's next tool boundary.
+  // the row stays queued for the consumer's next prompt or when its turn ends.
   const target = recipient.windowId ?? recipient.beaconWindowId ?? (/__/.test(to) || recipient.role != null ? null : to);
   if (target == null) {
-    process.stderr.write(`agent-send: queued, recipient busy/parked for ${row.id} in ${mbox}; no kitty window for ${to}, so the row stays queued for the consumer's next tool boundary (exit 3: not delivered yet, do not resend; withdraw it with --cancel --id ${row.id}, or re-send with --to <window-id>)\n`);
+    process.stderr.write(`agent-send: queued, recipient busy/parked for ${row.id} in ${mbox}; no kitty window for ${to}, so the row stays queued and is delivered at the recipient's next prompt or when its current turn ends (Stop drain) (exit 3: not delivered yet, do not resend; withdraw it with --cancel --id ${row.id}, or re-send with --to <window-id>)\n`);
     process.exit(3);
   }
   // Withdraw, then deliver over kitty. The withdraw is one O_APPEND write
@@ -609,7 +611,7 @@ const main = (argv) => {
   // is withdrawn, so without this the message is gone: put it back.
   if (KITTY_SENT_NOTHING.has(status)) {
     const again = appendMessage({ to: recipient.key, from, priority, text, topic });
-    process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing (${KITTY_NOTHING_REASON[status] ?? 'see kitty-send.sh'}) for ${row.id}; re-queued as ${again.id} in ${mbox} for the consumer's next tool boundary (exit 3: not delivered yet, do not resend; withdraw it with --cancel --id ${again.id})\n`);
+    process.stderr.write(`agent-send: kitty-send exit ${status} sent nothing (${KITTY_NOTHING_REASON[status] ?? 'see kitty-send.sh'}) for ${row.id}; re-queued as ${again.id} in ${mbox}, delivered at the recipient's next prompt or when its current turn ends (Stop drain) (exit 3: not delivered yet, do not resend; withdraw it with --cancel --id ${again.id})\n`);
     process.exit(3);
   }
   if (status == null) {
