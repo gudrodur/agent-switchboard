@@ -5,7 +5,8 @@
 // only at the next UserPromptSubmit, which an idle seat never gets. This hook
 // reads the session's unacked rows (by session id, as mailbox-inject does),
 // acks each with deliveredAs "stop" BEFORE printing, then prints
-// {"decision":"block","reason":...} so the seat continues with the messages.
+// {"decision":"block","reason":...} with the rows whose ack landed, so the
+// seat continues with the messages.
 //
 // stop_hook_active is deliberately ignored: the acks bound the loop, because
 // a second Stop finds nothing. No presence refresh and no role claim here.
@@ -55,15 +56,19 @@ try {
   const opts = dir ? { dir } : {};
   if (dir) assertMailboxReadable(dir);
   const found = readInbox(sessionId, opts);
-  if (found && found.length) {
-    for (const { key, row } of found) {
-      try {
-        ack({ key, id: row.id, deliveredAs: 'stop', ...opts });
-      } catch {
-        // Best-effort: the row is still printed below.
-      }
+  // Only a row whose ack landed is shown: an unacked row would block every
+  // later Stop too, and the turn would never end. A row that could not be
+  // acked waits for the next prompt, as before this hook.
+  const acked = (found ?? []).filter(({ key, row }) => {
+    try {
+      ack({ key, id: row.id, deliveredAs: 'stop', ...opts });
+      return true;
+    } catch {
+      return false;
     }
-    const reason = ['[mailbox] These messages arrived after your turn ended:', ...formatInboxLines(found)].join('\n');
+  });
+  if (acked.length) {
+    const reason = ['[mailbox] These messages arrived after your turn ended:', ...formatInboxLines(acked)].join('\n');
     process.stdout.write(JSON.stringify({ decision: 'block', reason }));
   }
 } catch {

@@ -59,6 +59,23 @@ test('a second run right after prints nothing', () => {
   assert.equal(res.stdout, '');
 });
 
+test('a row whose ack cannot be written is not shown, so it cannot block every Stop', () => {
+  const key = '-repo-s__stop2';
+  appendMessage({ to: key, from: 'agent-send:/other', priority: 'now', text: 'stuck', dir: mboxDir });
+  const file = path.join(mboxDir, `${key}.jsonl`);
+  fs.chmodSync(file, 0o444);
+  try {
+    for (let i = 0; i < 2; i++) {
+      const res = runHook({}, { cwd: CWD, session_id: 'stop2', stop_hook_active: i > 0 });
+      assert.equal(res.status, 0);
+      assert.equal(res.stdout, '');
+    }
+    assert.equal(readUnacked(key, { dir: mboxDir }).length, 1, 'still queued for the next prompt');
+  } finally {
+    fs.chmodSync(file, 0o644);
+  }
+});
+
 test('a broken store exits 0 with empty stdout', () => {
   const notADir = path.join(root, 'not-a-dir');
   fs.writeFileSync(notADir, 'x');
