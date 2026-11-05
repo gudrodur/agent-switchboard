@@ -22,6 +22,10 @@
 #                then follows this session; see agent-send.mjs --claim-role).
 #                The session is also started with --name <title>, so the kitty
 #                window title is the tab title, not the first prompt.
+#   (always)     when the launcher has a numeric KITTY_WINDOW_ID the window is also
+#                started with AGENT_DISPATCHED_BY=<that id>, for seats and package
+#                tabs alike. agent-config's coordination hint reads it and treats
+#                the dispatcher's own claims and presence as advisory, not blocking.
 #   --seat       an overseer seat, not a package tab: no state row, so it never
 #                holds the one-slot gate, no slot check and no brief claim, and
 #                --brief is optional (without one a fixed greeting starts the
@@ -263,6 +267,10 @@ ARGS=("$CLAUDE_BIN" --model "$MODEL" --name "$TITLE")
 ARGS+=("$MSG")
 ENV_ARGS=()
 [ -n "$ROLE" ] && ENV_ARGS=(--env "AGENT_SEAT_ROLE=$ROLE")
+case "${KITTY_WINDOW_ID:-}" in
+  ""|*[!0-9]*) ;;
+  *) ENV_ARGS+=(--env "AGENT_DISPATCHED_BY=$KITTY_WINDOW_ID") ;;
+esac
 WID=$(kitty @ launch --type=tab --tab-title "$TITLE" --cwd "$CWD" "${ENV_ARGS[@]}" "${ARGS[@]}" 2>/dev/null)
 case "$WID" in *[!0-9]*|"") die "kitty @ launch did not return a plain window id, got: '$WID'" ;; esac
 WPID=$(win_pid "$WID")

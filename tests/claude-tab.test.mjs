@@ -93,7 +93,7 @@ const session = (model, { bridge = false } = {}) => {
   return fs.writeFile(path.join(stateDir, 'session.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
 };
 
-const tab = async (args) => {
+const tab = async (args, extraEnv = {}) => {
   try {
     const r = await run('bash', [SCRIPT, ...args], {
       env: isolatedEnv({
@@ -104,6 +104,7 @@ const tab = async (args) => {
         CLAUDE_TAB_CONFIG: config,
         CLAUDE_SESSIONS_DIR: path.join(stateDir, 'sessions'),
         SWITCHBOARD_TASK_CLAIM: path.join(stateDir, 'no-claim-cli.mjs'),
+        ...extraEnv,
       }),
     });
     return { code: 0, out: r.stdout, err: r.stderr };
@@ -459,6 +460,30 @@ test('--role puts AGENT_SEAT_ROLE in the launched window environment', async () 
   assert.equal(r.code, 0, r.err);
   const args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
   assert.match(args, /^--env\nAGENT_SEAT_ROLE=lead$/m);
+});
+
+test('the launcher\'s numeric KITTY_WINDOW_ID goes in as AGENT_DISPATCHED_BY, for a package tab and a seat', async () => {
+  await session('claude-opus-5-5');
+  let r = await tab(full('--role', 'lead'), { KITTY_WINDOW_ID: '4' });
+  assert.equal(r.code, 0, r.err);
+  let args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
+  assert.match(args, /^--env\nAGENT_DISPATCHED_BY=4$/m);
+  assert.match(args, /^--env\nAGENT_SEAT_ROLE=lead$/m);
+  await fs.rm(path.join(stateDir, 'launch-args'));
+  await fs.rm(path.join(stateDir, 'opencode-tab-launched.' + os.userInfo().uid), { force: true });
+  await fs.rm(tdir, { recursive: true, force: true });
+  await session('claude-opus-5-5');
+  r = await tab(['--seat', '--title', 'claude: seat', '--model', 'opus', '--cwd', cwd], { KITTY_WINDOW_ID: '4' });
+  assert.equal(r.code, 0, r.err);
+  args = await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8');
+  assert.match(args, /^AGENT_DISPATCHED_BY=4$/m);
+});
+
+test('no AGENT_DISPATCHED_BY when the launcher has no numeric KITTY_WINDOW_ID', async () => {
+  await session('claude-opus-5-5');
+  const r = await tab(full(), { KITTY_WINDOW_ID: 'x1' });
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(await fs.readFile(path.join(stateDir, 'launch-args'), 'utf8'), /AGENT_DISPATCHED_BY/);
 });
 
 test('a role name outside [a-z0-9][a-z0-9-]{0,63} is refused and nothing is launched', async () => {
