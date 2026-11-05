@@ -322,7 +322,19 @@ const prompt = (sessionId, extra = {}) => {
   return r.stdout;
 };
 
-test('the claude hook nudges a role-less seat once, on its first prompt only', () => {
+// Traffic = the session sent a message (a row whose `from` is its key).
+const sentFrom = async (sessionId) => {
+  const { appendMessage } = await import('../lib/agent-mailbox.mjs');
+  appendMessage({ to: 'peer-key__other', from: recipientKey({ cwd: '/repo/proj', sessionId }), priority: 'queue', text: 'hi' });
+};
+
+test('the claude hook never nudges a seat with no switchboard traffic', () => {
+  assert.doesNotMatch(prompt('nudge-quiet'), /holds no role/);
+  assert.doesNotMatch(prompt('nudge-quiet'), /holds no role/);
+});
+
+test('the claude hook nudges a role-less seat once, after it first sends', async () => {
+  await sentFrom('nudge-1');
   const first = prompt('nudge-1');
   assert.match(first, /holds no role/);
   assert.match(first, /agent-send\.mjs --claim-role proj-<purpose>|agent-send\.mjs --claim-role [a-z0-9-]+-<purpose>/);
@@ -330,11 +342,12 @@ test('the claude hook nudges a role-less seat once, on its first prompt only', (
   assert.doesNotMatch(prompt('nudge-1'), /holds no role/);
 });
 
-test('the nudge still fires when another hook recorded presence first (parallel hooks)', () => {
+test('the nudge still fires when another hook recorded presence first (parallel hooks)', async () => {
   // A host's own presence hook runs beside mailbox-inject in the same prompt
   // and may write this session's beacon before it: that must not read as
   // "not the first prompt".
   beacon('nudge-race', '/repo/proj');
+  await sentFrom('nudge-race');
   assert.match(prompt('nudge-race'), /holds no role/);
   assert.doesNotMatch(prompt('nudge-race'), /holds no role/);
 });

@@ -92,8 +92,9 @@ try {
       }
     }
     const lines = formatInboxLines(found);
-    // Once per session (seat_nudges), after the claim above.
-    const nudge = claimNudgeOnce({ sessionId, cwd });
+    // Once per session (seat_nudges), after the claim above, and only once the
+    // session has sent or received a message.
+    const nudge = claimNudgeOnce({ sessionId, cwd, ...opts });
     if (nudge) lines.push(nudge);
     if (lines.length) {
       process.stdout.write(
