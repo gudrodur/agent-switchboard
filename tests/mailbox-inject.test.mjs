@@ -57,16 +57,31 @@ before(async () => {
   assert.equal(recipientKey({ cwd: CWD, sessionId: SID }), KEY);
 });
 
-test('empty inbox prints only the first-prompt claim nudge, exits 0, and marks the presence entry a consumer', () => {
+test('a seat with no switchboard traffic prints nothing (no claim nudge), exits 0, and marks the presence entry a consumer', () => {
   const res = runHook();
   assert.equal(res.status, 0);
-  assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /^\[mailbox\] This seat holds no role/);
+  assert.equal(res.stdout, '');
   const again = runHook();
   assert.equal(again.status, 0);
   assert.equal(again.stdout, '');
   const mine = presenceBeacons().filter((b) => b.cwd === CWD && b.sessionId === SID);
   assert.equal(mine.length, 1);
   assert.equal(mine[0].mailbox, true);
+});
+
+test('a seat that has sent a message gets the claim nudge once, on its next prompt', () => {
+  const sid = 'sender-1';
+  const run = () => spawnSync('node', [HOOK], {
+    input: JSON.stringify({ cwd: CWD, session_id: sid }),
+    encoding: 'utf-8',
+    env: isolatedEnv({ HOME: homeDir, AGENT_SWITCHBOARD_DIR: switchDir, AGENT_MAILBOX_DIR: mboxDir, AGENT_SWITCHBOARD_PRESENCE_FILE: path.join(switchDir, 'presence.json') }),
+  });
+  assert.equal(run().stdout, '');
+  appendMessage({ to: '-repo-b__peer', from: recipientKey({ cwd: CWD, sessionId: sid }), priority: 'queue', text: 'hello', dir: mboxDir });
+  const first = run();
+  assert.equal(first.status, 0);
+  assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /^\[mailbox\] This seat holds no role/);
+  assert.equal(run().stdout, '');
 });
 
 test('two rows print two lines and are acked as prompt', () => {
@@ -76,8 +91,10 @@ test('two rows print two lines and are acked as prompt', () => {
   assert.equal(res.status, 0);
   const parsed = JSON.parse(res.stdout);
   assert.equal(parsed.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+  // Receiving mail is traffic, so the once-per-session claim nudge rides along.
   const lines = parsed.hookSpecificOutput.additionalContext.split('\n');
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 3);
+  assert.match(lines[2], /^\[mailbox\] This seat holds no role/);
   assert.match(lines[0], /^\[mailbox\] from agent-send:\/other \(now, .*?\): first$/);
   assert.match(lines[1], /^\[mailbox\] from agent-send:\/other \(stop, .*?\): second$/);
   assert.deepEqual(readUnacked(KEY, { dir: mboxDir }), []);
