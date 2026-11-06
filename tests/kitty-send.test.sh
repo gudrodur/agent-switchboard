@@ -50,7 +50,8 @@
 # all about real rendering and a fixture would have reproduced none of them.
 # It creates its own throwaway windows and never touches an agent's window.
 #
-#   bash tests/kitty-send.test.sh
+#   bash tests/kitty-send.test.sh                       # failures + one summary line
+#   KITTY_TEST_VERBOSE=1 bash tests/kitty-send.test.sh  # every case
 #
 # Exit 0 all passed, 1 a failure, 2 could not run (no kitty remote control).
 
@@ -62,6 +63,9 @@ SEND="${KITTY_SEND:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../bin/kitty-s
 kitty @ ls >/dev/null 2>&1 || { echo "cannot run: kitty remote control unavailable" >&2; exit 2; }
 
 pass=0; fail=0
+# Quiet by default: only failures print, then one summary line.
+# KITTY_TEST_VERBOSE=1 restores the per-case PASS lines.
+pass_line() { [ -n "${KITTY_TEST_VERBOSE:-}" ] && echo "$1"; return 0; }
 WINDOWS=()
 # Every fixture is launched INTO ONE THROWAWAY TAB. `kitty @ launch
 # --type=window` without --match splits whichever tab is FOCUSED, and on
@@ -130,7 +134,7 @@ EOF
 check() { # name expected_exit expected_substring actual_exit actual_output
   local name="$1" wantrc="$2" wantsub="$3" rc="$4" out="$5"
   if [ "$rc" = "$wantrc" ] && printf '%s' "$out" | grep -qF -- "$wantsub"; then
-    echo "  PASS  $name"; pass=$((pass+1))
+    pass_line "  PASS  $name"; pass=$((pass+1))
   else
     echo "  FAIL  $name"
     echo "        wanted exit $wantrc containing: $wantsub"
@@ -142,7 +146,7 @@ check() { # name expected_exit expected_substring actual_exit actual_output
 MSG="PR is good work and it goes further than the brief asked, correctly: you found the same read-then-write class"
 HEAD_ELIDED="1. ${MSG:0:98}…"
 
-echo "kitty-send.sh delivery confirmation"
+[ -n "${KITTY_TEST_VERBOSE:-}" ] && echo "kitty-send.sh delivery confirmation"
 
 # 1. IDLE TARGET — the text echoes at the prompt, so the tail is on screen.
 #    This is the case that always worked; it is here so a change that fixes the
@@ -178,7 +182,7 @@ WINDOWS+=("$W4")
 sleep 3
 OUT=$("$SEND" --to "$W4" --text "$MSG" --timeout 4 2>&1); RC=$?
 if [ "$RC" = 1 ] || printf '%s' "$OUT" | grep -qiE "died|no window"; then
-  echo "  PASS  dead target is reported, not silently confirmed"; pass=$((pass+1))
+  pass_line "  PASS  dead target is reported, not silently confirmed"; pass=$((pass+1))
 else
   echo "  FAIL  dead target: exit $RC: $(printf '%s' "$OUT" | tr '\n' ' ' | cut -c1-120)"
   fail=$((fail+1))
@@ -215,7 +219,7 @@ if grep -q "send-text" "$WRAPDIR/calls.log" 2>/dev/null; then
   echo "  FAIL  unreadable pre-send screen: a send-text was issued with no proof possible"
   fail=$((fail+1))
 else
-  echo "  PASS  unreadable pre-send screen: no send-text was issued"
+  pass_line "  PASS  unreadable pre-send screen: no send-text was issued"
   pass=$((pass+1))
 fi
 
@@ -234,7 +238,7 @@ check "dialog on screen refuses with exit 4 and nothing sent" 4 "nothing was sen
 if kitty @ get-text --match "id:$W7" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
   echo "  FAIL  dialog on screen: the message was typed into the window anyway"; fail=$((fail+1))
 else
-  echo "  PASS  dialog on screen: no keystroke reached the window"; pass=$((pass+1))
+  pass_line "  PASS  dialog on screen: no keystroke reached the window"; pass=$((pass+1))
 fi
 
 # 8. --wait-idle WAITS OUT A SPINNER, THEN SENDS. The fixture sets a busy title
@@ -262,7 +266,7 @@ check "--wait-idle that runs out exits 5 with nothing sent" 5 "nothing was sent"
 if kitty @ get-text --match "id:$W9" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
   echo "  FAIL  --wait-idle timeout: the message was typed into the window anyway"; fail=$((fail+1))
 else
-  echo "  PASS  --wait-idle timeout: no keystroke reached the window"; pass=$((pass+1))
+  pass_line "  PASS  --wait-idle timeout: no keystroke reached the window"; pass=$((pass+1))
 fi
 
 # 10. TWO --file NOTES TO THE SAME WINDOW — the second must confirm. Every
@@ -298,7 +302,7 @@ OUT=$("$SEND" --to "$W11" --text "$MSG" --timeout 8 --queue --wait-idle 20 2>&1)
 t1=$(date +%s)
 check "--queue returns at once with a pid and a log" 0 "queued for window" "$RC" "$OUT"
 if [ $((t1 - t0)) -le 2 ]; then
-  echo "  PASS  --queue returned in $((t1 - t0))s"; pass=$((pass+1))
+  pass_line "  PASS  --queue returned in $((t1 - t0))s"; pass=$((pass+1))
 else
   echo "  FAIL  --queue blocked for $((t1 - t0))s"; fail=$((fail+1))
 fi
@@ -306,7 +310,7 @@ LOG11=$(printf '%s' "$OUT" | grep -o 'log [^)]*' | head -1 | cut -d' ' -f2)
 for _ in $(seq 1 20); do grep -qE 'typed, not proven submitted|could not observe|nothing was sent' "$LOG11" 2>/dev/null && break; sleep 1; done
 check "the queued send is typed once the target went idle" 0 "typed, not proven submitted" 0 "$(cat "$LOG11" 2>/dev/null)"
 if kitty @ get-text --match "id:$W11" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | tail -c 40 | tr -d '[:space:]')"; then
-  echo "  PASS  the queued message is on the window's screen"; pass=$((pass+1))
+  pass_line "  PASS  the queued message is on the window's screen"; pass=$((pass+1))
 else
   echo "  FAIL  the queued message never reached the window"; fail=$((fail+1))
 fi
@@ -327,7 +331,7 @@ OUT=$("$SEND" --cancel --to "$W12" 2>&1); RC=$?
 check "--cancel names the waiter it killed" 0 "cancelled the queued send" "$RC" "$OUT"
 sleep 1
 if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
-  echo "  PASS  --cancel: waiter pid $QPID is gone"; pass=$((pass+1))
+  pass_line "  PASS  --cancel: waiter pid $QPID is gone"; pass=$((pass+1))
 else
   echo "  FAIL  --cancel: waiter pid '$QPID' is still alive"; fail=$((fail+1))
 fi
@@ -336,7 +340,7 @@ check "--cancel with nothing queued says so" 1 "nothing is queued" "$RC" "$OUT"
 if kitty @ get-text --match "id:$W12" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
   echo "  FAIL  --cancel: the message was typed into the window anyway"; fail=$((fail+1))
 else
-  echo "  PASS  --cancel: no keystroke reached the window"; pass=$((pass+1))
+  pass_line "  PASS  --cancel: no keystroke reached the window"; pass=$((pass+1))
 fi
 
 # 13. MID-TURN TARGET, NO FLAG — refuses, sends NOTHING, exit 7. The spinner in
@@ -353,7 +357,7 @@ check "the refusal names all three ways out" 7 "--wait-idle N to hold, --queue t
 if kitty @ get-text --match "id:$W13" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
   echo "  FAIL  mid-turn refusal: the message was typed into the window anyway"; fail=$((fail+1))
 else
-  echo "  PASS  mid-turn refusal: no keystroke reached the window"; pass=$((pass+1))
+  pass_line "  PASS  mid-turn refusal: no keystroke reached the window"; pass=$((pass+1))
 fi
 
 # 14. --now SENDS INTO A MID-TURN TARGET and says what that costs. Same fixture,
@@ -381,7 +385,7 @@ check "unsubmitted chip after the send clears on Enter, typed not proven" 10 "ty
 if kitty @ get-text --match "id:$W16" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "[Pastedtext#"; then
   echo "  FAIL  unsubmitted chip still on screen after a confirmed send"; fail=$((fail+1))
 else
-  echo "  PASS  unsubmitted chip gone after a confirmed send"; pass=$((pass+1))
+  pass_line "  PASS  unsubmitted chip gone after a confirmed send"; pass=$((pass+1))
 fi
 
 # 17. UNSUBMITTED CHIP THAT NEVER CLEARS — the Enter goes out once and the
@@ -397,7 +401,7 @@ check "unsubmitted chip that never clears exits 3 and names the chip" 3 "chips 1
 check "the unsubmitted chip verdict names the window" 3 "window $W17" "$RC" "$OUT"
 check "the unsubmitted chip verdict says not to resend" 3 "Do NOT send it again blind" "$RC" "$OUT"
 if [ -f "$T17/kitty-send-stranded/stranded-$W17" ] && grep -q "chips=1" "$T17/kitty-send-stranded/stranded-$W17"; then
-  echo "  PASS  unsubmitted chip stranding recorded for the next send"; pass=$((pass+1))
+  pass_line "  PASS  unsubmitted chip stranding recorded for the next send"; pass=$((pass+1))
 else
   echo "  FAIL  unsubmitted chip stranding not recorded"; fail=$((fail+1))
 fi
@@ -420,7 +424,7 @@ OUT=$(XDG_RUNTIME_DIR="$T18" "$SEND" --to "$W18" --text "$MSG" --timeout 10 2>&1
 check "unsubmitted chip before the send with own record recovers, typed not proven" 10 "typed, not proven submitted" "$RC" "$OUT"
 check "the recovery says a stranded earlier message was recovered" 10 "a stranded earlier message was recovered" "$RC" "$OUT"
 if [ ! -f "$T18/kitty-send-stranded/stranded-$W18" ]; then
-  echo "  PASS  unsubmitted chip record dropped after recovery"; pass=$((pass+1))
+  pass_line "  PASS  unsubmitted chip record dropped after recovery"; pass=$((pass+1))
 else
   echo "  FAIL  unsubmitted chip record left behind after recovery"; fail=$((fail+1))
 fi
@@ -440,7 +444,7 @@ check "the refusal prints the recovery command for that window" 9 "--match id:$W
 if kitty @ get-text --match "id:$W19" --extent all 2>/dev/null | tr -d '[:space:]' | grep -qF "$(printf '%s' "$MSG" | cut -c1-40 | tr -d '[:space:]')"; then
   echo "  FAIL  message reached a dirty composer it should not have been sent to"; fail=$((fail+1))
 else
-  echo "  PASS  nothing reached the dirty composer"; pass=$((pass+1))
+  pass_line "  PASS  nothing reached the dirty composer"; pass=$((pass+1))
 fi
 rm -rf "$T19"
 
@@ -459,12 +463,11 @@ printf 'pid=%s\ncreated=%s\ntime=%s\nchips=%s\n' "$P20" "$C20" "$(date +%s)" "20
 OUT=$(XDG_RUNTIME_DIR="$T20" "$SEND" --to "$W20" --text "$MSG" --timeout 6 2>&1); RC=$?
 check "owned chip beside an unowned one refuses instead of submitting it" 9 "chips 20 21" "$RC" "$OUT"
 if [ -f "$T20/kitty-send-stranded/stranded-$W20" ]; then
-  echo "  PASS  mixed-ownership record kept, no recovery attempted"; pass=$((pass+1))
+  pass_line "  PASS  mixed-ownership record kept, no recovery attempted"; pass=$((pass+1))
 else
   echo "  FAIL  mixed-ownership record dropped"; fail=$((fail+1))
 fi
 rm -rf "$T20"
 
-echo
-echo "$pass passed, $fail failed"
+echo "kitty-send: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

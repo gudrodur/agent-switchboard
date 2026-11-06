@@ -16,9 +16,9 @@ A mailbox with acks between agents on three runtimes (Claude Code, opencode and 
 | Line | Built on | Where |
 |---|---|---|
 | Cross-platform channel: the store | One row per message in a SQLite file on disk (`$AGENT_SWITCHBOARD_DIR/state.db`); JSONL files under `mailbox/` only while a legacy pin is set (see Store below). The sender resolves the recipient's window and waits for the ack row. | `bin/agent-send.mjs`, `lib/agent-mailbox.mjs`, `lib/store.mjs` |
-| Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at each prompt in Claude Code and in Codex. | `hooks/claude/mailbox-inject.mjs`, `hooks/codex/mailbox.mjs` |
+| Cross-platform channel: the consumers | A hook inside each agent reads unacked rows and acks them: at each prompt in Claude Code and Codex, and at each Claude Code Stop. The opencode consumer lives in agent-config (`opencode/plugin/coordination.ts`), not here. | `hooks/claude/mailbox-inject.mjs`, `hooks/claude/mailbox-stop.mjs`, `hooks/codex/mailbox.mjs` |
 | Terminal if no ack | Terminal remote control: types the message into the window. Delivery is proven by a new inbound row in that tab's session file. | `bin/kitty-send.sh` |
-| Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started on screen, and refuses to close a window it did not launch. The opencode launcher hands the brief over as `--prompt` and proves the start from opencode's own session row, which names the model. The Claude Code launcher passes the brief as the initial prompt, can turn Remote Control on, and proves the start from the session's own transcript; with `--resume` it reopens an existing session and proves it from the rows written after the launch, and `claude-resume-set.sh` snapshots the live sessions before a reboot and replays them after. | `bin/opencode-tab.sh`, `bin/claude-tab.sh`, `bin/claude-resume-set.sh`, `lib/tab-ledger.sh` |
+| Launch | Terminal remote control: opens a titled tab running the agent with its brief, confirms it started, and refuses to close a window it did not launch; details in [`docs/launchers.md`](docs/launchers.md). | `bin/opencode-tab.sh`, `bin/claude-tab.sh`, `bin/claude-resume-set.sh`, `lib/tab-ledger.sh` |
 | Read state | Not the screen but the disk: the window's process and the runtime's own session record: a Claude Code window is read from Claude's session record (`status` busy or idle) and transcript, an opencode window from opencode's session database. Any other window reads as `unknown`. | `bin/tab-state.sh` |
 | Files | Plain files every agent can read: plan, briefs, steers, reports, logs. | a directory the agents share |
 | Shared record | The `gh` command line: issues, pull requests, checks, merges. | `gh` |
@@ -93,18 +93,7 @@ For a standalone installation without a bootstrap, omit `--import <switchboard-e
 
 ### Seat roles
 
-A window id dies with its window: when a seat is replaced by a new session in a new window, mail addressed to the old id fails. A **seat role** is a name for the seat itself. `--to role:<name>` follows whichever session holds the role (`[a-z0-9][a-z0-9-]{0,63}`).
-
-- **Naming:** `<repo>-<purpose>`, where purpose names the job (`lead`, `ship`, `history-scrub`), for example `xj-greenfield-lead`. A seat may hold several roles; address the role that names the job you want done, not the seat.
-- **Claim:** `agent-send.mjs --claim-role xj-greenfield-lead` makes the current session the holder. A role whose holder has a live beacon is **not** taken: the claim exits **11** naming the holder's window, and changes nothing. Close that window, or pass `--take-over`, which takes the role and queues a mailbox row to the displaced session ("role X was taken over by window N (session …)"). A dead or absent holder is taken without the flag. Launch a tab with `--role lead` (`claude-tab.sh`, `opencode-tab.sh`) and the session claims the role on its first prompt through `AGENT_SEAT_ROLE`, but only when the role is free or its holder is no longer live (the same live-holder check, `liveRoleHolder`), so a replaced seat cannot take the role back from its successor.
-- **Release:** `agent-send.mjs --release-role <name>` gives up a role this session holds, such as a placeholder claimed before the real one. Mail to it then waits for the next holder. A role nobody holds exits 0; one another session holds exits **12** and stays with its holder.
-- **Send:** a live holder receives the message exactly as if you had addressed its session. With no live holder the message is queued under the mailbox key `role:<name>` (exit 3, "queued for role X; no live holder"), and the next session that claims the role receives it on its next prompt.
-- **Inspect:** `agent-send.mjs --who` lists seats; `--json` prints the same for machines. A `--to <window>` that matches no window lists the live seats in your repo and every role holder. `--who` shows one row per seat (beacons from a subdirectory of a checkout collapse into its git toplevel, and a detached HEAD prints as `HEAD@<short sha>`).
-- **Which store:** run without `AGENT_SWITCHBOARD_DB`, the bin opens its default store, which may not be the one your seats use. So an empty `--who`, a `--claim-role` and a message queued for a role each print `no live seats in <path>` on stderr when that store has no seat. It does not change the exit code or stdout. `--claim-role` also always names the store it wrote to.
-- **Idle seats:** a beacon is written on a prompt and reads as live for 20 minutes. Past that, a seat whose writer pid is alive and whose kitty window is still open and still runs an agent (a `claude`, `pi` or `opencode` process whose environment holds that `KITTY_WINDOW_ID`, one `/proc` scan per call; an unreadable `/proc` counts as not running) stays listed, marked `idle <N>m` (`idleMinutes` in `--json`), for up to 7 days; a dead pid, a closed window, a window left with only a shell, or a live successor in the same window drops it. A send to an idle seat (by window id, or by a role it holds) says "seat idle Nm, typing to wake it" and delivers through the kitty-send fallback; the exit codes are unchanged.
-- **Nudge:** on the first prompt after a session has sent or received a switchboard message, a seat that holds no role (and has no `AGENT_SEAT_ROLE`) gets one context line saying window-id mail is lost when the window closes, with the exact `--claim-role` command and the `<repo>-<purpose>` convention. It is shown once per session id (the `seat_nudges` table), whichever hooks record presence for that prompt; a seat that never sends or receives never sees it.
-
-Roles live in the `seat_roles` table of the SQLite store (`AGENT_SWITCHBOARD_DB` or the default state db), also when the mailbox itself is still on the legacy file backend.
+A window id dies with its window; a **seat role** names the seat itself, and `--to role:<name>` follows whichever session holds it (`agent-send.mjs --claim-role <name>`, `--release-role <name>`, `--who`). Claim, release, send, idle-seat and nudge rules: [`docs/seat-roles.md`](docs/seat-roles.md).
 
 ### Sending and launching
 
@@ -141,36 +130,7 @@ tab-state.sh <window-id> [--json] [--watch [--interval=S]]
 
 ## Configuration
 
-Every variable, its default, and what reads it — taken from the code, not from memory.
-
-| Variable | Default | Used by |
-|---|---|---|
-| `AGENT_SWITCHBOARD_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-switchboard` | `lib/presence.mjs`: root for presence and mailbox |
-| `AGENT_SWITCHBOARD_PRESENCE_FILE` | `$AGENT_SWITCHBOARD_DIR/presence.json` | `lib/presence.mjs`: legacy live-beacon file, imported once into the store; beacons live in `state.db` (`presence_beacons`) unless this pin is set |
-| `AGENT_SWITCHBOARD_DB` | `$AGENT_SWITCHBOARD_DIR/state.db` | `lib/store.mjs`: the SQLite store (WAL mode) holding the mailbox and presence when no legacy file override below is set |
-| `AGENT_SWITCHBOARD_MAILBOX_DIR` | `$AGENT_SWITCHBOARD_DIR/mailbox` | `lib/agent-mailbox.mjs`: legacy JSONL mailbox, one file per recipient (`AGENT_MAILBOX_DIR` still honoured as the older name); used while set or while a `{dir}` override is passed |
-| `AGENT_SWITCHBOARD_SENDER` | `another agent session` | `bin/agent-send.mjs`, `bin/kitty-send.sh`: the sender label on terminal-delivered notes |
-| `AGENT_SEND_IDLE_WAIT_S` | `5` (seconds) | `bin/agent-send.mjs`: the ack wait for a recipient whose window title shows it idle (busy keeps 120 s; `--deadline` wins) |
-| `AGENT_SWITCHBOARD_SEND` | `bin/kitty-send.sh` beside `agent-send.mjs` | `bin/agent-send.mjs`: the fallback sender (`AGENT_SEND_KITTY_SEND` wins when set) |
-| `OPENCODE_TAB_LAUNCH` | `<agent-config>/scripts/opencode-launch.sh` | `bin/opencode-tab.sh`: the command the tab execs (exports the Cloudflare MCP tokens, then runs opencode) |
-| `OPENCODE_TAB_PROBE_TIMEOUT` | `60` | `bin/opencode-tab.sh`: seconds the pre-launch model probe may take before it counts as a hang |
-| `OPENCODE_TAB_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db` | `bin/opencode-tab.sh`: opencode's store, read-only, for the session row that proves the start and its model |
-| `OPENCODE_TAB_PRESENCE` | unset: `lib/presence.mjs` on the caller's store | `bin/opencode-tab.sh`: a command printing `{"beacons":[...]}` for the start proof, in place of the lib |
-| `CLAUDE_TAB_BIN` | `claude` | `bin/claude-tab.sh`: the command the tab execs |
-| `CLAUDE_TAB_PROJECTS` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects` | `bin/claude-tab.sh`: Claude Code's transcripts, read-only, for the new session file that proves the start, its model and (with `--rc`) its `bridge-session` row |
-| `CLAUDE_RESUME_SET_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/claude-resume-set` | `bin/claude-resume-set.sh`: where `--snapshot` writes `latest.json`, its `.md` and a timestamped copy, and what `--replay` reads by default |
-| `CLAUDE_RESUME_SET_TAB` | `bin/claude-tab.sh` beside it | `bin/claude-resume-set.sh`: the launcher each replayed row runs |
-| `CLAUDE_TAB_CONFIG` | `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json` | `bin/claude-tab.sh`: Claude Code's user config, read-only, for folder trust (the cwd or an ancestor must be trusted, or nothing is launched) |
-| `AGENT_CONFIG_HOME` | `$HOME/agent-config`, else `$HOME/.claude` | `bin/opencode-tab.sh`, `bin/claude-tab.sh`: where `scripts/task-claim.mjs` lives |
-| `SWITCHBOARD_TASK_CLAIM` | `$AGENT_CONFIG_HOME/scripts/task-claim.mjs` | `lib/tab-ledger.sh` (both launchers): the brief-claim CLI; a missing one is a loud skip |
-| `CLAUDE_SESSION_ID` | unset, then `KITTY_WINDOW_ID` | both launchers: the launcher id written into each state row |
-| `CLAUDE_SESSIONS_DIR`, `CLAUDE_PROJECTS_DIR` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions`, `.../projects` | `lib/claude-session.sh` (`bin/tab-state.sh`, `bin/kitty-send.sh`, `bin/claude-tab.sh --resume`, `bin/claude-resume-set.sh`): Claude Code's per-pid session records and transcripts, read-only; `KITTY_SEND_CLAUDE_SESSIONS_DIR` and `KITTY_SEND_CLAUDE_PROJECTS_DIR` still win |
-| `CLAUDE_CODE_SESSION_ID` | null (address by cwd only) | `hooks/claude/mailbox-inject.mjs`, `bin/agent-send.mjs`: host-agent session identity |
-| `KITTY_WINDOW_ID` | null (cwd join only) | the Claude Code hook, `lib/agent-mailbox.mjs`: exact window-to-session routing (the Codex hook records no window id) |
-
-The ledger of launched tabs is `$XDG_RUNTIME_DIR/opencode-tab-launched.<uid>`; a ledger left under its former name `omp-tab-launched.<uid>` is moved to the new name on first use.
-
-Timers, for orientation: presence beacons go stale after 20 minutes (`PRESENCE_STALE_MS`, never restated), or at once when the beacon carries a writer pid that is dead (`isLiveBeacon` in `lib/presence.mjs`, which the mailbox readers import); the sender waits 120 s for an ack from a busy recipient and 5 s from one whose window title shows it idle (`AGENT_SEND_IDLE_WAIT_S`; `--deadline N` always wins, unbounded for `--queue`; a busy target acks only at its next tool boundary, and a kitty fallback under `--now` would discard the tool result it was waiting for); the parked-tab fallback poll ticks every 5 s (`IDLE_POLL_MS`); the queued terminal waiter heartbeats every 5 min and never times out unless `--deadline` caps it.
+Every environment variable, its default and its reader, plus the timers: [`docs/configuration.md`](docs/configuration.md). Exit codes: [`docs/exit-codes.md`](docs/exit-codes.md).
 
 ## Store (SQLite) and retention
 
