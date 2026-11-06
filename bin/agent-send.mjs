@@ -92,7 +92,8 @@ const usage = () => `Usage:
   agent-send.mjs --release-role <name> [--as <session-id>]
   agent-send.mjs --who [--json]
 
-  --now         priority now (default when no mode is given)
+  --now         priority now (default when no mode is given: a bare send types and
+                submits at once to an idle recipient, a busy one keeps kitty-send's mid-turn guard)
   --stop        priority stop: interrupts the consumer's current run
   --idle-when   priority idle (REGEX is the consumer's parked proof)
   --queue       priority queue; the ack wait below is unbounded unless --deadline caps it
@@ -427,6 +428,18 @@ const main = (argv) => {
   // pre-mailbox path supervisors steer tabs with. The MCP cannot type
   // into a window, so send_message keeps those as errors.
   const senderSessionId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
+  // Idle = the window exists and its title carries no braille spinner
+  // (U+2800-28FF) or half-circle spinner (U+25D0-25D3, Claude Code's busy
+  // title mark, ◐◑◒◓; idle shows ✳). Unreadable kitty, unknown window or a non-numeric id is
+  // "not idle": callers then keep the cautious (busy) behaviour.
+  const windowIsIdle = (winId) => {
+    try {
+      const ls = execFileSync(process.env.AGENT_MAILBOX_KITTY ?? 'kitty', ['@', 'ls'], { encoding: 'utf-8', timeout: 5000 });
+      const wins = JSON.parse(ls).flatMap((t) => (t.tabs ?? []).flatMap((tab) => tab.windows ?? []));
+      const rec = wins.find((w) => w.id === Number(winId));
+      return rec != null && !/[\u2800-\u28FF\u25D0-\u25D3]/.test(rec.title ?? '');
+    } catch { return false; }
+  };
   // One kitty-send run; returns its exit status (null when a signal killed it).
   // requeue: the caller re-queues the row when kitty-send sent nothing, so this
   // function prints no verdict of its own for those codes (one line, not two).
@@ -449,13 +462,17 @@ const main = (argv) => {
       if (requeue) args.push('--wait-idle', deadline != null ? String(deadline) : '120');
       else args.push('--queue');
     }
-    // A bare --text is priority now but forwards nothing: kitty-send.sh keeps
-    // its own mid-turn default (exit 7). Only an explicit --now/--stop sends
-    // mid-turn, --stop becoming --now (the one kitty flag that does).
+    // An explicit --now/--stop sends mid-turn, --stop becoming --now (the one
+    // kitty flag that does). A bare send (no mode) is priority now: to an IDLE
+    // recipient it forwards --now too, since typing into an idle window is safe
+    // and otherwise kitty-send.sh's mid-turn default exits 7 and the re-queued
+    // row waits for a prompt an idle seat never makes. A busy recipient forwards
+    // nothing, so kitty-send's mid-turn guard and the re-queue path still apply.
     // --deadline goes along only without --now: kitty-send refuses the pair
     // (exit 1, "mutually exclusive"), and here --deadline bounded agent-send's
     // own ack wait, not a kitty-send idle wait.
-    if (mode === 'now' || mode === 'stop') args.push('--now');
+    const bareToIdle = mode == null && /^\d+$/.test(String(target)) && windowIsIdle(target);
+    if (mode === 'now' || mode === 'stop' || bareToIdle) args.push('--now');
     else if (deadline != null && !(requeue && priority === 'queue')) args.push('--deadline', deadline);
     const r = spawnSync(kittySend(), args, { stdio: 'inherit' });
     // The typed copy is a delivery the store must see (a --queue waiter only
@@ -557,13 +574,7 @@ const main = (argv) => {
   if (deadline == null && deadlineMs != null) {
     const rwin = recipient.windowId ?? recipient.beaconWindowId ?? null;
     if (rwin != null) {
-      let rIdle = false;
-      try {
-        const ls = execFileSync(process.env.AGENT_MAILBOX_KITTY ?? 'kitty', ['@', 'ls'], { encoding: 'utf-8', timeout: 5000 });
-        const wins = JSON.parse(ls).flatMap((t) => (t.tabs ?? []).flatMap((tab) => tab.windows ?? []));
-        const rec = wins.find((w) => w.id === Number(rwin));
-        rIdle = rec != null && !/[\u2800-\u28FF]/.test(rec.title ?? '');
-      } catch { rIdle = false; }
+      const rIdle = windowIsIdle(rwin);
       if (rIdle) {
         const capS = Number(process.env.AGENT_SEND_IDLE_WAIT_S ?? 5);
         deadlineMs = (Number.isFinite(capS) && capS >= 0 ? capS : 5) * 1000;

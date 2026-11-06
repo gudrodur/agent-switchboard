@@ -641,6 +641,46 @@ test('priority flags reach kitty-send unchanged on the fallback path', async () 
     fs.writeFileSync(presFile, saved);
   }
 });
+// Bare send (no mode) is priority now: an idle recipient gets --now so kitty-send
+// types and submits at once; a busy one (spinner in the title) does not, so
+// kitty-send's mid-turn guard still applies (gudrodur/agent-config#1651 row 1).
+const bareSendArgv = async (extraArgs, title) => {
+  const saved = fs.readFileSync(presFile, 'utf-8');
+  const busyKitty = path.join(binDir, 'kitty-title-stub');
+  try {
+    writePresence([{ sessionId: 's1', cwd: '/repo/a', mailbox: true }]);
+    fs.writeFileSync(busyKitty, [
+      '#!/usr/bin/env bash',
+      `echo '[{"tabs":[{"windows":[{"id":991002,"title":${JSON.stringify(title)},"cwd":"/repo/b"}]}]}]'`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    fs.rmSync(fallbackArgv, { force: true });
+    const r = await runSend(['--to', '991002', ...extraArgs, '--text', 'hello'],
+      childEnv({ CLAUDE_CODE_SESSION_ID: 's1', AGENT_MAILBOX_KITTY: busyKitty }));
+    return { code: r.code, argv: fs.readFileSync(fallbackArgv, 'utf-8').split('\n').filter(Boolean) };
+  } finally {
+    fs.writeFileSync(presFile, saved);
+  }
+};
+
+test('a bare send to an idle recipient forwards --now to kitty-send', async () => {
+  const { code, argv } = await bareSendArgv([], 'claude: idle seat');
+  assert.equal(code, 5);
+  assert.ok(argv.includes('--now'), `argv: ${argv}`);
+  assert.ok(!argv.includes('--deadline'));
+});
+
+test('a bare send to a busy recipient does not forward --now', async () => {
+  const { argv } = await bareSendArgv([], '\u2807 claude: working');
+  assert.ok(!argv.includes('--now'), `argv: ${argv}`);
+});
+
+test('an explicit --queue to an idle recipient is unchanged', async () => {
+  const { argv } = await bareSendArgv(['--queue'], 'claude: idle seat');
+  assert.ok(argv.includes('--queue'));
+  assert.ok(!argv.includes('--now'), `argv: ${argv}`);
+});
+
 test('resolution errors carry codes; no-consumer messages name kitty-send', () => {
   const saved = fs.readFileSync(presFile, 'utf-8');
   const capture = (fn) => {
@@ -1232,4 +1272,11 @@ test('findRecentTopicDelivery honours the window and ignores unacked rows', () =
   assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 3600_000, now, dir: mboxDir }), null, 'outside the window');
   assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 3 * 3600_000, now, dir: mboxDir }).from, 'x');
   assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 0, now, dir: mboxDir }), null, 'window 0 disables');
+});
+
+test('a bare send to a recipient with Claude Code\'s half-circle busy mark does not forward --now', async () => {
+  for (const mark of ['◐', '◑']) {
+    const { argv } = await bareSendArgv([], `${mark} claude: working`);
+    assert.ok(!argv.includes('--now'), `${mark} argv: ${argv}`);
+  }
 });
