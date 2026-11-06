@@ -1,5 +1,14 @@
 # Eight patterns, more than one message each
 
+> **Status note (2026-11).** These patterns were written against a two-runtime
+> split ("Runtime A" leads, "Runtime B" workers). Today every runtime has a
+> mailbox consumer: Claude Code (prompt hook and Stop drain), Codex (prompt
+> hook) and opencode (the agent-config plugin). Delivery reaches an idle
+> Claude Code seat at its Stop, and seats are addressed by a durable
+> [seat role](seat-roles.md) (`--to role:<name>`) instead of a window id. Read
+> "Runtime A/B" below as the lead and delegated lanes, and treat the
+> pattern 8 gap as narrowed to the missing in-reply-to field.
+
 Time runs down. Each step names its channel and the proof that it arrived.
 Six were observed on one night of real work; two are proposed, because the
 night showed they are missing. Lanes: the human, lead agents (Runtime A), the

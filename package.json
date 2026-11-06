@@ -7,7 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --import ./tests/helpers/isolate-setup.mjs --test tests/*.test.mjs && bash tests/kitty-send.test.sh"
+    "test": "npm run test:node && npm run test:kitty",
+    "test:node": "node --import ./tests/helpers/isolate-setup.mjs --test --test-reporter=dot tests/*.test.mjs",
+    "test:kitty": "bash tests/kitty-send.test.sh"
   },
   "license": "MIT"
 }
