@@ -196,3 +196,22 @@ test('the nudge states the <repo>-<purpose> convention and that a seat may hold 
   assert.match(line, /several roles/);
   assert.match(line, /--claim-role \S+-<purpose>/);
 });
+
+test("the nudge's command, run in a clean shell, claims the role in the store the hook read", async () => {
+  // agent-config#1680 row 2: the hook ran with AGENT_SWITCHBOARD_DB pinned by its
+  // delegator, but printed the bare bin path. Run as printed, the bin opened the
+  // default store, said "now holds role", and nobody else ever read that claim.
+  const line = claimNudge({ sessionId: 'nudge-run', cwd: '/r/holder', role: '' });
+  const cmd = line.slice(line.indexOf('job: ') + 'job: '.length).replace('<purpose>', 'printed') + ' --as nudge-run';
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'roleown-default-'));
+  const r = spawnSync('bash', ['-c', cmd], {
+    encoding: 'utf-8',
+    timeout: 30_000,
+    env: isolatedEnv({ XDG_STATE_HOME: elsewhere, AGENT_MAILBOX_KITTY: kittyStub, AGENT_MAILBOX_PROC_DIR: procDir }),
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const { roleHolder } = await roles();
+  const holder = await withDb((db) => roleHolder(db, 'seat-printed'));
+  assert.equal(holder?.session_id, 'nudge-run', `claim went elsewhere: ${r.stderr}`);
+  assert.ok(!fs.existsSync(path.join(elsewhere, 'agent-switchboard', 'state.db')), 'the default store was opened');
+});
