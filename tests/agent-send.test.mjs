@@ -1273,3 +1273,10 @@ test('findRecentTopicDelivery honours the window and ignores unacked rows', () =
   assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 3 * 3600_000, now, dir: mboxDir }).from, 'x');
   assert.equal(findRecentTopicDelivery({ key, topic: 'win', windowMs: 0, now, dir: mboxDir }), null, 'window 0 disables');
 });
+
+test('a bare send to a recipient with Claude Code\'s half-circle busy mark does not forward --now', async () => {
+  for (const mark of ['◐', '◑']) {
+    const { argv } = await bareSendArgv([], `${mark} claude: working`);
+    assert.ok(!argv.includes('--now'), `${mark} argv: ${argv}`);
+  }
+});

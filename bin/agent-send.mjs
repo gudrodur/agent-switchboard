@@ -429,14 +429,15 @@ const main = (argv) => {
   // into a window, so send_message keeps those as errors.
   const senderSessionId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
   // Idle = the window exists and its title carries no braille spinner
-  // (U+2800-28FF). Unreadable kitty, unknown window or a non-numeric id is
+  // (U+2800-28FF) or half-circle spinner (U+25D0-25D3, Claude Code's busy
+  // title mark, ◐◑◒◓; idle shows ✳). Unreadable kitty, unknown window or a non-numeric id is
   // "not idle": callers then keep the cautious (busy) behaviour.
   const windowIsIdle = (winId) => {
     try {
       const ls = execFileSync(process.env.AGENT_MAILBOX_KITTY ?? 'kitty', ['@', 'ls'], { encoding: 'utf-8', timeout: 5000 });
       const wins = JSON.parse(ls).flatMap((t) => (t.tabs ?? []).flatMap((tab) => tab.windows ?? []));
       const rec = wins.find((w) => w.id === Number(winId));
-      return rec != null && !/[\u2800-\u28FF]/.test(rec.title ?? '');
+      return rec != null && !/[\u2800-\u28FF\u25D0-\u25D3]/.test(rec.title ?? '');
     } catch { return false; }
   };
   // One kitty-send run; returns its exit status (null when a signal killed it).
